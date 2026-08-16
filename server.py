@@ -174,10 +174,33 @@ async def motion(request: Request, image: UploadFile | None = None,
     os.makedirs(EVENT_DIR, exist_ok=True)
 
     if image is not None:
+        # A posted snapshot is one frame at whatever resolution HA chose --
+        # the weakest input this classifier can be given. Treat it as a
+        # trigger, not as the evidence: if a buffer is available it holds more
+        # frames, at full resolution, including some from before the trigger.
+        # The posted frame is still scored, so nothing is lost either way.
         raw = np.frombuffer(await image.read(), np.uint8)
         one = cv2.imdecode(raw, cv2.IMREAD_COLOR)
         frames = [one] if one is not None else []
         source = "posted"
+        if BUFFER_MODE != "off":
+            try:
+                buffered = (segments if BUFFER_MODE == "segments"
+                            else streamer)
+                extra = (buffered.get(camera, stream_url(camera)).frames(BURST)
+                         if BUFFER_MODE == "segments"
+                         else buffered.get(camera,
+                                           stream_url(camera)).snapshot(BURST))
+                if extra:
+                    # Posted frame may differ in size from the stream; scoring
+                    # mixes fine, but keep them separate for the record.
+                    frames = extra + [f for f in frames
+                                      if f is not None
+                                      and f.shape == extra[0].shape]
+                    source = f"posted+{BUFFER_MODE}"
+            except Exception as exc:
+                print(f"  buffer unavailable, using posted frame only: {exc}",
+                      flush=True)
     else:
         # No file part, so the camera name (if any) is in the JSON body.
         try:
