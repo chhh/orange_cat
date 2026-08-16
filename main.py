@@ -4,13 +4,18 @@ from dotenv import load_dotenv
 
 def main():
     load_dotenv()
-    api_key = os.getenv("RTSP_CAT_KEY")
+    k1 = "CAT_VIDEO_KEY_INSIDE" 
+    k2 = "CAT_VIDEO_KEY_OUTSIDE" 
+    api_key_inside = os.getenv(k1)
+    api_key_outside = os.getenv(k2)
     if not api_key:
-        raise RuntimeError("Env var RTSP_CAT_KEY not set. Either add it to .env file in this repo (it's gitignored or export it in your shell temporarily.")
+        raise RuntimeError(f"Env vars [{k1}, {k2}] not set. Either add it to .env file in this repo (it's gitignored or export it in your shell temporarily.")
 
-    RTSPS_URL = f"rtsps://192.168.1.1:7441/{api_key}?enableSrtp"
-    RTSP_URL = f"rtsp://192.168.1.1:7447/{api_key}?enableSrtp"
-    cap = cv2.VideoCapture(RTSP_URL)
+    # RTSPS_URL = f"rtsps://192.168.1.1:7441/{k1}?enableSrtp"
+    URL_INSIDE = f"rtsp://192.168.1.1:7447/{k1}?enableSrtp"
+    URL_OUTSIDE = f"rtsp://192.168.1.1:7447/{k2}?enableSrtp"
+    rtsps://192.168.1.1:7441/QgxffNeM11oM9m6D?enableSrtp
+    cap = cv2.VideoCapture(URL_INSIDE)
     if not cap.isOpened():
         raise RuntimeError("Could not open RTSP stream")
     ret, frame = cap.read()
