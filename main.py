@@ -8,8 +8,13 @@ def main():
     if not api_key:
         raise RuntimeError("Env var RTSP_CAT_KEY not set. Either add it to .env file in this repo (it's gitignored or export it in your shell temporarily.")
 
-    RTSPS_URL = f"rtsps://192.168.1.1:7441/{api_key}?enableSrtp"
-    RTSP_URL = f"rtsp://192.168.1.1:7447/{api_key}?enableSrtp"
+    # On the UDM's own LAN this is 192.168.1.1. Over WireGuard that address is
+    # unusable (it collides with the client's own gateway), so use the UDM's
+    # VPN-side address 192.168.7.1 instead -- same device, both ports listen.
+    host = os.getenv("CAT_HOST", "192.168.1.1")
+
+    RTSPS_URL = f"rtsps://{host}:7441/{api_key}?enableSrtp"
+    RTSP_URL = f"rtsp://{host}:7447/{api_key}?enableSrtp"
     cap = cv2.VideoCapture(RTSP_URL)
     if not cap.isOpened():
         raise RuntimeError("Could not open RTSP stream")
