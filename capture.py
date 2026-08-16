@@ -60,6 +60,38 @@ def grab(url, flush=5):
         cap.release()
 
 
+def grab_burst(url, count=15, stride=4, flush=5):
+    """Collect several frames spread over a couple of seconds.
+
+    A single frame is a poor basis for a verdict: per-frame confidence on the
+    black-and-white cats runs 57-60%, so one snapshot is close to a coin flip.
+    Clip-level accuracy came from many frames voting, and this is how the live
+    path gets the same thing.
+
+    The stream delivers ~30fps, so consecutive frames are nearly identical --
+    taking every `stride`-th spreads the sample over real movement instead.
+    """
+    cap = cv2.VideoCapture(url)
+    out = []
+    try:
+        if not cap.isOpened():
+            return out
+        for _ in range(flush):  # discard the stale buffered frames
+            cap.read()
+        wanted = count * stride
+        for i in range(wanted):
+            ok, f = cap.read()
+            if not ok or f is None:
+                break
+            if i % stride == 0:
+                out.append(f)
+            if len(out) >= count:
+                break
+        return out
+    finally:
+        cap.release()
+
+
 def measure(img, mask=None):
     """Per-frame statistics.
 

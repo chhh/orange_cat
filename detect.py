@@ -94,14 +94,32 @@ def _bg_path(camera):
     return os.path.join(BG_DIR, f"bg_{camera}.npy")
 
 
+# The model is several megabytes and gets read twice per frame while scoring a
+# burst -- hundreds of megabytes of pointless disk reads per event. Keep it in
+# memory and reload only when the file on disk actually changes.
+_bg_cache = {}
+
+
 def load_background(camera):
     path = _bg_path(camera)
     if not os.path.exists(path):
+        _bg_cache.pop(camera, None)
         return None
     try:
-        return np.load(path)
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return None
+
+    cached = _bg_cache.get(camera)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+
+    try:
+        bg = np.load(path)
     except (ValueError, OSError):
         return None
+    _bg_cache[camera] = (mtime, bg)
+    return bg
 
 
 def update_background(camera, frame, alpha=BG_ALPHA):
@@ -118,6 +136,10 @@ def update_background(camera, frame, alpha=BG_ALPHA):
     else:
         cv2.accumulateWeighted(cur, bg, alpha)
     np.save(_bg_path(camera), bg)
+    try:
+        _bg_cache[camera] = (os.path.getmtime(_bg_path(camera)), bg)
+    except OSError:
+        pass
     return bg
 
 
@@ -188,6 +210,30 @@ def ir_features(frame, mask, camera):
         "rel_bright": round(mean / max(float(behind.mean()), 1.0), 3),
         "cv": round(float(cat.std()) / max(mean, 1.0), 3),
     }
+
+
+DECISIVE = ("orange_cat", "probably_resident", "no_orange")
+
+
+def vote(verdicts):
+    """Combine per-frame verdicts into one answer.
+
+    Only decisive frames count. Frames where the animal was too close to
+    measure, or where nothing moved, are abstentions rather than evidence --
+    counting them would let a cat pressed against the lens outvote the frames
+    that could actually be scored.
+    """
+    tally = {}
+    for v in verdicts:
+        if v in DECISIVE:
+            tally[v] = tally.get(v, 0) + 1
+
+    total = sum(tally.values())
+    if not total:
+        return None, 0.0, tally
+
+    winner = max(tally, key=tally.get)
+    return winner, tally[winner] / total, tally
 
 
 def classify(stats, info, ir=None):
