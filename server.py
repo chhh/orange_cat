@@ -25,6 +25,7 @@ Run:  uv run server.py            (listens on 0.0.0.0:8080)
 
 import csv
 import os
+import threading
 from datetime import datetime
 
 import cv2
@@ -35,7 +36,7 @@ import uvicorn
 
 import detect
 import streamer
-from capture import CAMERAS, grab_burst, measure, stream_url
+from capture import CAMERAS, grab, grab_burst, measure, stream_url
 
 EVENT_DIR = "frames/events"
 CSV_PATH = "frames/events.csv"
@@ -61,16 +62,29 @@ def record(row):
 
 BURST = 15
 
+# Holding RTSP connections open costs ~24% of a CPU for two streams, and buys
+# 0.25s events instead of 4.0s. That is waste for notifications and essential
+# for a deterrent, so it is a choice rather than a default.
+#
+#   RING_BUFFER=0  connect on demand   -- ~4.0s, idle when nothing happens
+#   RING_BUFFER=1  hold connections    -- ~0.25s, plus pre-trigger frames
+RING_BUFFER = os.getenv("RING_BUFFER", "0") == "1"
+
 
 @app.get("/health")
 def health():
     return {"ok": True, "host": os.getenv("CAT_HOST", "192.168.1.1"),
-            "cameras": list(CAMERAS), "streams": streamer.all_status()}
+            "cameras": list(CAMERAS), "ring_buffer": RING_BUFFER,
+            "streams": streamer.all_status()}
 
 
 @app.on_event("startup")
 def _warm_streams():
     """Open both connections at boot so no event pays the handshake."""
+    if not RING_BUFFER:
+        print("  ring buffer off -- connecting on demand (set RING_BUFFER=1 "
+              "for sub-second events)", flush=True)
+        return
     for cam in CAMERAS:
         try:
             streamer.get(cam, stream_url(cam))
@@ -79,8 +93,42 @@ def _warm_streams():
             print(f"  could not start {cam}: {exc}", flush=True)
 
 
+# Without the ring buffer nothing else feeds the background model, and a stale
+# model scores every event against yesterday's light. One frame per camera
+# every few minutes is enough and costs almost nothing.
+BG_REFRESH_SECONDS = int(os.getenv("BG_REFRESH_SECONDS", "300"))
+_stop_refresh = threading.Event()
+
+
+def _refresh_backgrounds():
+    while not _stop_refresh.wait(BG_REFRESH_SECONDS):
+        for cam in CAMERAS:
+            try:
+                frame = grab(stream_url(cam))
+                if frame is None:
+                    continue
+                mask, info = detect.motion_mask(frame, cam)
+                # Only learn from a quiet scene, so a loitering cat cannot
+                # gradually become part of the scenery.
+                if mask is None or info["motion_frac"] < 0.002:
+                    detect.update_background(cam, frame)
+            except Exception as exc:
+                print(f"  background refresh failed for {cam}: {exc}",
+                      flush=True)
+
+
+@app.on_event("startup")
+def _start_refresh():
+    if RING_BUFFER:
+        return  # the streamer threads already do this
+    threading.Thread(target=_refresh_backgrounds, daemon=True,
+                     name="bg-refresh").start()
+    print(f"  background refresh every {BG_REFRESH_SECONDS}s", flush=True)
+
+
 @app.on_event("shutdown")
 def _close_streams():
+    _stop_refresh.set()
     streamer.stop_all()
 
 
@@ -122,13 +170,14 @@ async def motion(request: Request, image: UploadFile | None = None,
             pass
         if camera not in CAMERAS:
             camera = "outside"
-        # Read the rolling buffer: full resolution, frames from before the
-        # trigger, and no connection handshake to wait on.
         url = stream_url(camera)
-        frames = streamer.get(camera, url).snapshot(BURST)
-        source = "ring_buffer"
+        frames, source = [], "rtsp_cold"
+        if RING_BUFFER:
+            # Full resolution, frames from before the trigger, no handshake.
+            frames = streamer.get(camera, url).snapshot(BURST)
+            source = "ring_buffer"
         if not frames:
-            # Buffer not warm yet (server just started, or stream dropped).
+            # Buffer off, not warm yet, or the stream dropped.
             frames = grab_burst(url)
             source = "rtsp_cold"
 
