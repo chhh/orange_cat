@@ -42,7 +42,8 @@ def record(row):
     new_file = not os.path.exists(CSV_PATH)
     fields = ["ts", "camera", "file", "verdict", "confidence", "brightness",
               "saturation", "rgb_spread", "is_ir", "warm_pct", "luma_std",
-              "px", "motion_px", "motion_frac", "roi_px", "source", "reasoning"]
+              "px", "motion_px", "motion_frac", "iso_frac", "usable",
+              "roi_px", "rel_bright", "cv", "source", "reasoning"]
     with open(CSV_PATH, "a", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")
         if new_file:
@@ -92,19 +93,22 @@ async def motion(request: Request, image: UploadFile | None = None,
     cv2.imwrite(path, frame)
 
     mask, info = detect.motion_mask(frame, camera)
+    ir_feat = None
     if mask is None:
         # Bootstrap: nothing to compare against yet. Seed the model so the
         # next event has one, and decline to guess about this frame.
         detect.update_background(camera, frame)
         stats = measure(frame, detect.roi_mask(frame.shape, camera))
-        verdict, confidence, reasoning = detect.classify(stats, info)
     else:
         stats = measure(frame, mask)
-        verdict, confidence, reasoning = detect.classify(stats, info)
+        if stats["is_ir"]:
+            ir_feat = detect.ir_features(frame, mask, camera)
+    verdict, confidence, reasoning = detect.classify(stats, info, ir_feat)
 
     row = {"ts": stamp, "camera": camera, "file": path, "verdict": verdict,
            "confidence": confidence, "source": source, "reasoning": reasoning,
-           **stats, **{k: v for k, v in info.items() if k != "reason"}}
+           **stats, **{k: v for k, v in info.items() if k != "reason"},
+           **(ir_feat or {})}
     record(row)
 
     mode = "IR " if stats["is_ir"] else "COL"
@@ -114,7 +118,7 @@ async def motion(request: Request, image: UploadFile | None = None,
 
     return {"ok": True, "camera": camera, "verdict": verdict,
             "confidence": confidence, "source": source, "stats": stats,
-            "motion": info, "reasoning": reasoning}
+            "motion": info, "ir": ir_feat, "reasoning": reasoning}
 
 
 if __name__ == "__main__":

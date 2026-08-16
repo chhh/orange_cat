@@ -46,13 +46,33 @@ DIFF_THRESHOLD = 25
 # Ignore motion smaller than this fraction of the ROI -- leaves, rain, noise.
 MIN_MOTION_FRACTION = 0.004
 
+# The camera sits at the door, so many motion frames are extreme close-ups in
+# which the animal fills the view. There is then no visible background to
+# compare it against and the exposure has blown out, so the frame cannot be
+# scored at all. Measured on real clips, only frames in this range are usable.
+ISO_MIN = 0.015
+ISO_MAX = 0.25
+
 # --- Verdict thresholds -------------------------------------------------
-# Both are still UNCALIBRATED: no frame containing a known cat has been scored
-# yet. They are deliberately biased toward flagging, because this system alerts
-# rather than gates -- a false positive is a wasted notification, a false
-# negative is a stolen meal, and neither locks a cat outside.
-WARM_PCT_THRESHOLD = 8.0   # of the moving pixels, how much reads as ginger
-LUMA_STD_THRESHOLD = 28.0  # below this the animal looks one-toned in IR
+WARM_PCT_THRESHOLD = 8.0   # daylight: how much of the animal reads as ginger
+
+# IR discriminator, calibrated against 9 labelled clips from 2026-08-16.
+# Colour is entirely absent at night, but the orange tabby reflects infrared
+# far more strongly than the background it stands against, while black fur
+# absorbs it. Measured over frames where the cat was properly isolated:
+#
+#     orange tabby     rel_bright 1.226 - 1.660
+#     black and white  rel_bright 0.716 - 0.915
+#
+# a 29% margin, far wider than any contrast measure (cv managed 12%, and
+# whole-frame luminance spread separated nothing at all). Threshold sits below
+# the midpoint because this system alerts rather than gates: a false alarm
+# costs a notification, a miss costs a meal, and neither locks a cat outside.
+IR_REL_BRIGHT_THRESHOLD = 1.05
+
+# Secondary, same calibration: tabby 0.224-0.381, b&w 0.428-0.645. Used only
+# to qualify confidence, since its margin is narrower.
+IR_CV_THRESHOLD = 0.42
 
 
 def roi_box(shape, camera):
@@ -101,41 +121,80 @@ def update_background(camera, frame, alpha=BG_ALPHA):
     return bg
 
 
+def normalise_gain(frame, bg):
+    """Scale a frame so its median luminance matches the background's.
+
+    The camera re-exposes when a large pale animal walks in -- mean frame
+    luminance was seen swinging from 59 to 156 across real clips. Without this
+    correction a plain subtraction marks every pixel as changed, and the mask
+    describes the room instead of the cat.
+    """
+    fg = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    bgg = cv2.cvtColor(bg.astype(np.uint8), cv2.COLOR_BGR2GRAY).astype(np.float32)
+    fm, bm = float(np.median(fg)), float(np.median(bgg))
+    if fm < 1:
+        return fg
+    return np.clip(fg * (bm / fm), 0, 255)
+
+
 def motion_mask(frame, camera):
-    """Pixels that changed against the background, within the ROI.
+    """The animal: largest connected region of change inside the ROI.
 
     Returns (mask, info). mask is None when there is no background yet.
     """
     bg = load_background(camera)
     roi = roi_mask(frame.shape, camera)
     roi_px = int(roi.sum())
+    base = {"roi_px": roi_px, "motion_px": 0, "motion_frac": 0.0,
+            "iso_frac": 0.0, "usable": 0}
 
     if bg is None or bg.shape != frame.shape:
-        return None, {"reason": "no background model yet", "roi_px": roi_px,
-                      "motion_px": 0, "motion_frac": 0.0}
+        return None, {**base, "reason": "no background model yet"}
 
-    diff = cv2.absdiff(frame.astype(np.float32), bg).astype(np.uint8)
-    grey = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
-    grey = cv2.GaussianBlur(grey, (5, 5), 0)
-    changed = grey > DIFF_THRESHOLD
+    fg = normalise_gain(frame, bg)
+    bgg = cv2.cvtColor(bg.astype(np.uint8), cv2.COLOR_BGR2GRAY).astype(np.float32)
+    diff = cv2.absdiff(fg, bgg).astype(np.uint8)
+    diff = cv2.GaussianBlur(diff, (5, 5), 0)
+    binary = ((diff > DIFF_THRESHOLD) & roi).astype(np.uint8)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
+    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
 
-    # Close small holes so an animal reads as one region rather than speckle.
-    kernel = np.ones((5, 5), np.uint8)
-    changed = cv2.morphologyEx(changed.astype(np.uint8), cv2.MORPH_CLOSE,
-                               kernel).astype(bool)
+    n, labelled, stats, _ = cv2.connectedComponentsWithStats(binary, 8)
+    if n <= 1:
+        return binary.astype(bool), {**base, "reason": ""}
 
-    mask = changed & roi
+    biggest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    mask = labelled == biggest
     motion_px = int(mask.sum())
     frac = motion_px / roi_px if roi_px else 0.0
+    iso = motion_px / float(frame.shape[0] * frame.shape[1])
+
     return mask, {"reason": "", "roi_px": roi_px, "motion_px": motion_px,
-                  "motion_frac": round(frac, 5)}
+                  "motion_frac": round(frac, 5), "iso_frac": round(iso, 5),
+                  "usable": int(ISO_MIN <= iso <= ISO_MAX)}
 
 
-def classify(stats, info):
+def ir_features(frame, mask, camera):
+    """Brightness of the animal relative to the background behind it."""
+    bg = load_background(camera)
+    if bg is None or bg.shape != frame.shape or not mask.any():
+        return None
+    grey = normalise_gain(frame, bg)
+    bgg = cv2.cvtColor(bg.astype(np.uint8), cv2.COLOR_BGR2GRAY).astype(np.float32)
+    cat = grey[mask]
+    behind = bgg[mask]
+    mean = float(cat.mean())
+    return {
+        "rel_bright": round(mean / max(float(behind.mean()), 1.0), 3),
+        "cv": round(float(cat.std()) / max(mean, 1.0), 3),
+    }
+
+
+def classify(stats, info, ir=None):
     """Return (verdict, confidence, reasoning).
 
-    Verdicts: no_background / no_animal / orange_cat / no_orange /
-              possible_intruder / probably_resident
+    Verdicts: no_background / no_animal / unmeasurable /
+              orange_cat / no_orange / probably_resident
     """
     if info.get("reason"):
         return "no_background", "none", info["reason"]
@@ -147,13 +206,23 @@ def classify(stats, info):
                 f"{MIN_MOTION_FRACTION * 100:.2f}% floor")
 
     if stats["is_ir"]:
-        uniform = stats["luma_std"] < LUMA_STD_THRESHOLD
+        # Colour is gone; go on how brightly the animal returns infrared.
+        if not info.get("usable"):
+            return ("unmeasurable", "none",
+                    f"animal fills {info['iso_frac'] * 100:.1f}% of frame "
+                    f"(usable range {ISO_MIN * 100:.1f}-{ISO_MAX * 100:.0f}%) "
+                    "-- too close to compare against its background")
+        if ir is None:
+            return "unmeasurable", "none", "IR features unavailable"
+
+        bright = ir["rel_bright"] > IR_REL_BRIGHT_THRESHOLD
+        agrees = (ir["cv"] < IR_CV_THRESHOLD) == bright
         return (
-            "possible_intruder" if uniform else "probably_resident",
-            "low",
-            f"IR mode, no colour; luma_std={stats['luma_std']} vs "
-            f"{LUMA_STD_THRESHOLD} over {info['motion_px']} moving px "
-            f"(UNCALIBRATED)",
+            "orange_cat" if bright else "probably_resident",
+            "medium" if agrees else "low",
+            f"IR mode; rel_bright={ir['rel_bright']} vs "
+            f"{IR_REL_BRIGHT_THRESHOLD} (tabby 1.23-1.66, b&w 0.72-0.92), "
+            f"cv={ir['cv']} {'agrees' if agrees else 'DISAGREES'}",
         )
 
     orange = stats["warm_pct"] > WARM_PCT_THRESHOLD

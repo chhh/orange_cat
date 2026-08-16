@@ -3,3 +3,5 @@ frame.jpg
 frames/
 .venv/
 __pycache__/
+samples/
+cat-videos.zip
