@@ -1,7 +1,29 @@
-frame.jpg
+# secrets
 .env
-frames/
+
+# python
 .venv/
 __pycache__/
+*.pyc
+
+# captured frames, event logs, background models
+frame.jpg
+frame_*.jpg
+frames/
+*.npy
+*.csv
+
+# sample clips and contact sheets (too big; see AGENTS.md §8)
 samples/
 cat-videos.zip
+*.mp4
+*.zip
+
+# ffmpeg segment buffer if TMPDIR fallback lands in the repo
+ocp-segments/
+
+# editor / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
