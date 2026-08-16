@@ -18,7 +18,8 @@ Either shape may name a camera ("inside" / "outside"); default is outside.
 
 Scoring happens on the pixels that changed against a background model, inside
 the camera's region of interest -- see detect.py for why the whole frame is
-useless here.
+useless here. Frames come from whichever buffer BUFFER_MODE selects; see the
+comment on that constant below, and segments.py for the default.
 
 Run:  uv run server.py            (listens on 0.0.0.0:8080)
 """
@@ -35,6 +36,7 @@ from fastapi import FastAPI, Form, Request, UploadFile
 import uvicorn
 
 import detect
+import segments
 import streamer
 from capture import CAMERAS, grab, grab_burst, measure, stream_url
 
@@ -62,35 +64,40 @@ def record(row):
 
 BURST = 15
 
-# Holding RTSP connections open costs ~24% of a CPU for two streams, and buys
-# 0.25s events instead of 4.0s. That is waste for notifications and essential
-# for a deterrent, so it is a choice rather than a default.
+# How frames are on hand when a notification arrives. Measured on two cameras:
 #
-#   RING_BUFFER=0  connect on demand   -- ~4.0s, idle when nothing happens
-#   RING_BUFFER=1  hold connections    -- ~0.25s, plus pre-trigger frames
-RING_BUFFER = os.getenv("RING_BUFFER", "0") == "1"
+#   segments  0% idle CPU, ~50MB, ~1.0s per event, ~10s of history  (default)
+#             ffmpeg remuxes RTSP to a rolling window without ever decoding;
+#             we decode only the seconds that matter, when asked.
+#   decoded  24% idle CPU, 295MB, 0.25s per event, ~2.7s of history
+#             frames kept decoded in memory. Fastest, but continuously
+#             decompresses video nobody looks at.
+#   off       0% idle CPU,  96MB, ~4.0s per event, no pre-trigger frames
+#             dial out on each event and pay the 3.1s RTSP handshake.
+BUFFER_MODE = os.getenv("BUFFER_MODE", "segments").lower()
 
 
 @app.get("/health")
 def health():
     return {"ok": True, "host": os.getenv("CAT_HOST", "192.168.1.1"),
-            "cameras": list(CAMERAS), "ring_buffer": RING_BUFFER,
-            "streams": streamer.all_status()}
+            "cameras": list(CAMERAS), "buffer_mode": BUFFER_MODE,
+            "buffers": (segments.all_status() if BUFFER_MODE == "segments"
+                        else streamer.all_status())}
 
 
 @app.on_event("startup")
-def _warm_streams():
-    """Open both connections at boot so no event pays the handshake."""
-    if not RING_BUFFER:
-        print("  ring buffer off -- connecting on demand (set RING_BUFFER=1 "
-              "for sub-second events)", flush=True)
+def _warm_buffers():
+    """Start whichever buffer the mode calls for, so events find frames ready."""
+    if BUFFER_MODE == "off":
+        print("  buffering off -- dialling out per event (~4s)", flush=True)
         return
+    module = segments if BUFFER_MODE == "segments" else streamer
     for cam in CAMERAS:
         try:
-            streamer.get(cam, stream_url(cam))
-            print(f"  streaming {cam}", flush=True)
+            module.get(cam, stream_url(cam))
+            print(f"  buffering {cam} ({BUFFER_MODE})", flush=True)
         except Exception as exc:
-            print(f"  could not start {cam}: {exc}", flush=True)
+            print(f"  could not buffer {cam}: {exc}", flush=True)
 
 
 # Without the ring buffer nothing else feeds the background model, and a stale
@@ -100,11 +107,21 @@ BG_REFRESH_SECONDS = int(os.getenv("BG_REFRESH_SECONDS", "300"))
 _stop_refresh = threading.Event()
 
 
+def _refresh_frame(cam):
+    """A recent frame for background learning, as cheaply as the mode allows."""
+    if BUFFER_MODE == "segments":
+        # Already on hand -- no connection, no handshake.
+        frame = segments.get(cam, stream_url(cam)).latest_frame()
+        if frame is not None:
+            return frame
+    return grab(stream_url(cam))
+
+
 def _refresh_backgrounds():
     while not _stop_refresh.wait(BG_REFRESH_SECONDS):
         for cam in CAMERAS:
             try:
-                frame = grab(stream_url(cam))
+                frame = _refresh_frame(cam)
                 if frame is None:
                     continue
                 mask, info = detect.motion_mask(frame, cam)
@@ -119,7 +136,7 @@ def _refresh_backgrounds():
 
 @app.on_event("startup")
 def _start_refresh():
-    if RING_BUFFER:
+    if BUFFER_MODE == "decoded":
         return  # the streamer threads already do this
     threading.Thread(target=_refresh_backgrounds, daemon=True,
                      name="bg-refresh").start()
@@ -127,9 +144,10 @@ def _start_refresh():
 
 
 @app.on_event("shutdown")
-def _close_streams():
+def _close_buffers():
     _stop_refresh.set()
     streamer.stop_all()
+    segments.stop_all()
 
 
 def score_frame(frame, camera):
@@ -172,12 +190,15 @@ async def motion(request: Request, image: UploadFile | None = None,
             camera = "outside"
         url = stream_url(camera)
         frames, source = [], "rtsp_cold"
-        if RING_BUFFER:
-            # Full resolution, frames from before the trigger, no handshake.
+        if BUFFER_MODE == "segments":
+            # Decode the seconds we already have; includes pre-trigger frames.
+            frames = segments.get(camera, url).frames(BURST)
+            source = "segments"
+        elif BUFFER_MODE == "decoded":
             frames = streamer.get(camera, url).snapshot(BURST)
             source = "ring_buffer"
         if not frames:
-            # Buffer off, not warm yet, or the stream dropped.
+            # Buffering off, not warm yet, or the stream dropped.
             frames = grab_burst(url)
             source = "rtsp_cold"
 
