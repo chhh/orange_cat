@@ -1,2 +1,5 @@
 frame.jpg
 .env
+frames/
+.venv/
+__pycache__/
