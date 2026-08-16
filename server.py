@@ -34,6 +34,7 @@ from fastapi import FastAPI, Form, Request, UploadFile
 import uvicorn
 
 import detect
+import streamer
 from capture import CAMERAS, grab_burst, measure, stream_url
 
 EVENT_DIR = "frames/events"
@@ -58,10 +59,29 @@ def record(row):
         writer.writerow(row)
 
 
+BURST = 15
+
+
 @app.get("/health")
 def health():
     return {"ok": True, "host": os.getenv("CAT_HOST", "192.168.1.1"),
-            "cameras": list(CAMERAS)}
+            "cameras": list(CAMERAS), "streams": streamer.all_status()}
+
+
+@app.on_event("startup")
+def _warm_streams():
+    """Open both connections at boot so no event pays the handshake."""
+    for cam in CAMERAS:
+        try:
+            streamer.get(cam, stream_url(cam))
+            print(f"  streaming {cam}", flush=True)
+        except Exception as exc:
+            print(f"  could not start {cam}: {exc}", flush=True)
+
+
+@app.on_event("shutdown")
+def _close_streams():
+    streamer.stop_all()
 
 
 def score_frame(frame, camera):
@@ -102,9 +122,15 @@ async def motion(request: Request, image: UploadFile | None = None,
             pass
         if camera not in CAMERAS:
             camera = "outside"
-        # Pull our own burst: full resolution, and enough frames to vote on.
-        frames = grab_burst(stream_url(camera))
-        source = "rtsp_burst"
+        # Read the rolling buffer: full resolution, frames from before the
+        # trigger, and no connection handshake to wait on.
+        url = stream_url(camera)
+        frames = streamer.get(camera, url).snapshot(BURST)
+        source = "ring_buffer"
+        if not frames:
+            # Buffer not warm yet (server just started, or stream dropped).
+            frames = grab_burst(url)
+            source = "rtsp_cold"
 
     if camera not in CAMERAS:
         camera = "outside"
