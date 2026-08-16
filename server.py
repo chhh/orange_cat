@@ -8,7 +8,11 @@ shapes are accepted, so the automation can be wired either way:
                                                  which costs a few seconds and
                                                  may miss a fast-moving cat
 
-Every event is scored, logged to frames/events.csv, and the frame kept.
+Either shape may name a camera ("inside" / "outside"); default is outside.
+
+Scoring happens on the pixels that changed against a background model, inside
+the camera's region of interest -- see detect.py for why the whole frame is
+useless here.
 
 Run:  uv run server.py            (listens on 0.0.0.0:8080)
 """
@@ -20,74 +24,41 @@ from datetime import datetime
 import cv2
 import numpy as np
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request, UploadFile
+from fastapi import FastAPI, Form, Request, UploadFile
 import uvicorn
 
-from capture import grab, measure, stream_url
+import detect
+from capture import CAMERAS, grab, measure, stream_url
 
 EVENT_DIR = "frames/events"
 CSV_PATH = "frames/events.csv"
-
-# Provisional. Neither number is calibrated against a real cat yet -- see
-# classify() for what each one is standing in for.
-WARM_PCT_THRESHOLD = 0.5
-LUMA_STD_THRESHOLD = 30.0
 
 load_dotenv()
 app = FastAPI()
 
 
-def classify(stats):
-    """Provisional verdict. Returns (verdict, confidence, reasoning).
-
-    Daylight: an orange cat puts warm, saturated pixels into a scene that has
-    almost none. That test is sound but the threshold is a guess.
-
-    IR: no colour survives, so the stand-in is luminance spread -- a
-    black-and-white cat should show two distinct tones where a uniformly
-    orange one shows one. This is weak, and measuring it over the whole frame
-    (rather than the animal) makes it weaker still. It needs real IR frames of
-    both cats before it can be trusted at all.
-    """
-    if stats["is_ir"]:
-        uniform = stats["luma_std"] < LUMA_STD_THRESHOLD
-        return (
-            "possible_intruder" if uniform else "probably_resident",
-            "low",
-            f"IR mode, no colour available; luma_std={stats['luma_std']} "
-            f"vs threshold {LUMA_STD_THRESHOLD} (UNCALIBRATED)",
-        )
-
-    orange = stats["warm_pct"] > WARM_PCT_THRESHOLD
-    return (
-        "orange_cat" if orange else "no_orange",
-        "medium",
-        f"colour mode; warm_pct={stats['warm_pct']} "
-        f"vs threshold {WARM_PCT_THRESHOLD}",
-    )
-
-
-def record(stamp, path, stats, verdict, confidence, reasoning):
+def record(row):
     os.makedirs(os.path.dirname(CSV_PATH), exist_ok=True)
     new_file = not os.path.exists(CSV_PATH)
-    fields = ["ts", "file", "verdict", "confidence", "brightness", "saturation",
-              "rgb_spread", "is_ir", "warm_pct", "luma_std", "reasoning"]
+    fields = ["ts", "camera", "file", "verdict", "confidence", "brightness",
+              "saturation", "rgb_spread", "is_ir", "warm_pct", "luma_std",
+              "px", "motion_px", "motion_frac", "roi_px", "source", "reasoning"]
     with open(CSV_PATH, "a", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=fields)
+        writer = csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")
         if new_file:
             writer.writeheader()
-        writer.writerow({"ts": stamp, "file": path, "verdict": verdict,
-                         "confidence": confidence, "reasoning": reasoning,
-                         **stats})
+        writer.writerow(row)
 
 
 @app.get("/health")
 def health():
-    return {"ok": True, "host": os.getenv("CAT_HOST", "192.168.1.1")}
+    return {"ok": True, "host": os.getenv("CAT_HOST", "192.168.1.1"),
+            "cameras": list(CAMERAS)}
 
 
 @app.post("/motion")
-async def motion(request: Request, image: UploadFile | None = None):
+async def motion(request: Request, image: UploadFile | None = None,
+                 camera: str = Form("outside")):
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")[:-3]
     os.makedirs(EVENT_DIR, exist_ok=True)
 
@@ -96,27 +67,54 @@ async def motion(request: Request, image: UploadFile | None = None):
         frame = cv2.imdecode(raw, cv2.IMREAD_COLOR)
         source = "posted"
     else:
-        frame = grab(stream_url())
+        # No file part, so the camera name (if any) is in the JSON body.
+        try:
+            body = await request.json()
+            if isinstance(body, dict):
+                camera = body.get("camera", camera)
+        except Exception:
+            pass
+        if camera not in CAMERAS:
+            camera = "outside"
+        frame = grab(stream_url(camera))
         source = "rtsp_pull"
 
-    if frame is None:
-        print(f"{stamp}  event received but no usable frame ({source})", flush=True)
-        return {"ok": False, "error": "no frame", "source": source}
+    if camera not in CAMERAS:
+        camera = "outside"
 
-    path = f"{EVENT_DIR}/{stamp}.jpg"
+    if frame is None:
+        print(f"{stamp}  {camera}: event but no usable frame ({source})",
+              flush=True)
+        return {"ok": False, "error": "no frame", "camera": camera,
+                "source": source}
+
+    path = f"{EVENT_DIR}/{camera}-{stamp}.jpg"
     cv2.imwrite(path, frame)
 
-    stats = measure(frame)
-    verdict, confidence, reasoning = classify(stats)
-    record(stamp, path, stats, verdict, confidence, reasoning)
+    mask, info = detect.motion_mask(frame, camera)
+    if mask is None:
+        # Bootstrap: nothing to compare against yet. Seed the model so the
+        # next event has one, and decline to guess about this frame.
+        detect.update_background(camera, frame)
+        stats = measure(frame, detect.roi_mask(frame.shape, camera))
+        verdict, confidence, reasoning = detect.classify(stats, info)
+    else:
+        stats = measure(frame, mask)
+        verdict, confidence, reasoning = detect.classify(stats, info)
+
+    row = {"ts": stamp, "camera": camera, "file": path, "verdict": verdict,
+           "confidence": confidence, "source": source, "reasoning": reasoning,
+           **stats, **{k: v for k, v in info.items() if k != "reason"}}
+    record(row)
 
     mode = "IR " if stats["is_ir"] else "COL"
-    print(f"{stamp}  {mode}  {verdict:18s} ({confidence:6s})  "
+    print(f"{stamp}  {camera:7s} {mode}  {verdict:18s} ({confidence:6s})  "
           f"warm={stats['warm_pct']:7.3f}%  luma_std={stats['luma_std']:6.2f}  "
-          f"src={source}", flush=True)
+          f"motion={info['motion_px']:6d}px  src={source}", flush=True)
 
-    return {"ok": True, "verdict": verdict, "confidence": confidence,
-            "source": source, "stats": stats, "reasoning": reasoning}
+    return {"ok": True, "camera": camera, "verdict": verdict,
+            "confidence": confidence, "source": source, "stats": stats,
+            "motion": info, "reasoning": reasoning}
 
 
 if __name__ == "__main__":
