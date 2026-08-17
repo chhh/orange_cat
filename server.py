@@ -47,16 +47,36 @@ load_dotenv()
 app = FastAPI()
 
 
+FIELDS = ["ts", "camera", "file", "verdict", "confidence", "brightness",
+          "saturation", "rgb_spread", "is_ir", "warm_pct", "luma_std",
+          "px", "motion_px", "motion_frac", "iso_frac", "usable",
+          "roi_px", "rel_bright", "cv", "frames", "votes", "width",
+          "height", "source", "reasoning"]
+
+
 def record(row):
+    """Append an event, keeping the header honest about the columns.
+
+    Appending wider rows under an older header produced a file that could not
+    be parsed by its own header -- 11 columns declared, 25 written. When the
+    schema changes, the old file is set aside rather than silently corrupted.
+    """
     os.makedirs(os.path.dirname(CSV_PATH), exist_ok=True)
+
+    if os.path.exists(CSV_PATH):
+        with open(CSV_PATH, newline="") as fh:
+            existing = next(csv.reader(fh), [])
+        if existing and existing != FIELDS:
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            archived = f"{CSV_PATH}.{stamp}.bak"
+            os.rename(CSV_PATH, archived)
+            print(f"  events.csv schema changed ({len(existing)} -> "
+                  f"{len(FIELDS)} columns); previous file kept as {archived}",
+                  flush=True)
+
     new_file = not os.path.exists(CSV_PATH)
-    fields = ["ts", "camera", "file", "verdict", "confidence", "brightness",
-              "saturation", "rgb_spread", "is_ir", "warm_pct", "luma_std",
-              "px", "motion_px", "motion_frac", "iso_frac", "usable",
-              "roi_px", "rel_bright", "cv", "frames", "votes", "width",
-              "height", "source", "reasoning"]
     with open(CSV_PATH, "a", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")
+        writer = csv.DictWriter(fh, fieldnames=FIELDS, extrasaction="ignore")
         if new_file:
             writer.writeheader()
         writer.writerow(row)
@@ -117,6 +137,19 @@ def _refresh_frame(cam):
     return grab(stream_url(cam))
 
 
+# Refusing to learn from a busy scene protects the model from absorbing a
+# loitering cat -- but it also deadlocks: once the model is stale, every frame
+# looks busy, so it never qualifies to update, so it stays stale forever. That
+# happened overnight on 2026-08-16: a daylight model was still in place at
+# 04:00, flagging 23% of every frame as motion.
+#
+# A cat does not sit at the door for half an hour. Sustained high motion means
+# the model is wrong, not that the scene is busy, so after this many
+# consecutive busy checks we relearn anyway.
+BG_STALE_AFTER = 4
+_busy_streak = {}
+
+
 def _refresh_backgrounds():
     while not _stop_refresh.wait(BG_REFRESH_SECONDS):
         for cam in CAMERAS:
@@ -125,10 +158,21 @@ def _refresh_backgrounds():
                 if frame is None:
                     continue
                 mask, info = detect.motion_mask(frame, cam)
-                # Only learn from a quiet scene, so a loitering cat cannot
-                # gradually become part of the scenery.
-                if mask is None or info["motion_frac"] < 0.002:
+                quiet = mask is None or info["motion_frac"] < 0.002
+                streak = _busy_streak.get(cam, 0)
+
+                if quiet:
                     detect.update_background(cam, frame)
+                    _busy_streak[cam] = 0
+                elif streak + 1 >= BG_STALE_AFTER:
+                    print(f"  {cam}: {streak + 1} busy checks in a row "
+                          f"({info['motion_frac'] * 100:.1f}% motion) -- "
+                          f"treating the model as stale and relearning",
+                          flush=True)
+                    detect.update_background(cam, frame)
+                    _busy_streak[cam] = 0
+                else:
+                    _busy_streak[cam] = streak + 1
             except Exception as exc:
                 print(f"  background refresh failed for {cam}: {exc}",
                       flush=True)
@@ -179,7 +223,20 @@ async def motion(request: Request, image: UploadFile | None = None,
         # trigger, not as the evidence: if a buffer is available it holds more
         # frames, at full resolution, including some from before the trigger.
         # The posted frame is still scored, so nothing is lost either way.
-        raw = np.frombuffer(await image.read(), np.uint8)
+        blob = await image.read()
+        # Keep exactly what arrived, byte for byte. Useful for confirming
+        # which camera an automation is really pointed at, and for spotting
+        # truncated or re-encoded snapshots.
+        posted_path = f"{EVENT_DIR}/{camera}-{stamp}-posted.jpg"
+        try:
+            with open(posted_path, "wb") as fh:
+                fh.write(blob)
+        except OSError as exc:
+            print(f"  could not save posted image: {exc}", flush=True)
+        print(f"{stamp}  posted image from {getattr(image, 'filename', '?')}"
+              f" -> {len(blob)} bytes, saved {posted_path}", flush=True)
+
+        raw = np.frombuffer(blob, np.uint8)
         one = cv2.imdecode(raw, cv2.IMREAD_COLOR)
         frames = [one] if one is not None else []
         source = "posted"
