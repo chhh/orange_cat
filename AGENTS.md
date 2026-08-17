@@ -30,6 +30,7 @@ Two consequences of the deterrence goal that are easy to get backwards:
 |---|---|---|
 | Dima's resident cats (several) | all **black and white** | must never be flagged |
 | The stray | **orange tabby (ginger)** | target |
+| A possum | grey-brown | also visits; must not be flagged (scores 0.00 %) |
 
 That colour split is the whole basis of the classifier:
 
@@ -60,11 +61,36 @@ in**. That is what makes ~1–4 s of latency acceptable and puts it inside the
 1.5–25 % of-frame isolation window the classifier needs (a cat barrelling past
 the lens is `unmeasurable`).
 
-Lighting note: the **outside camera has patio lights next to it**, so at night
-it usually stays in colour with decent quality rather than dropping to IR — the
-IR path is mainly needed for the *inside* camera, which is what it was
-calibrated on. Verify `is_ir` per event in `frames/events.csv` rather than
-assuming.
+Lighting note, now measured rather than assumed (42 samples, 21:09 → 06:49 on
+2026-08-16/17): the **outside camera never drops to IR**. `rgb_spread` held
+9.3–10.5 all night, never near the cutoff of 8, because of the patio light. So:
+
+- **Outside camera → colour path only.** `rel_bright` separates *nothing* there
+  (orange 0.72–0.77 vs residents 0.34–2.13, fully overlapping). Do not apply
+  the IR thresholds to it.
+- **Inside camera → IR path only.** It sits in IR even at 13:30, because the
+  room has no daylight.
+
+### Validated on labelled outside-camera clips (2026-08-17)
+
+Dima exported and hand-sorted a night's clips into `our-cats/`,
+`orange-intruder-cat/` and `possum/` (see §8). Scoring `warm_pct` over the
+motion mask:
+
+| | n | warm % |
+|---|---|---|
+| orange intruder | 4 | **22.1 – 99.0** |
+| possum | 1 | **0.00** |
+| our cats, night and full daylight | 21 | **0.00 – 3.6** |
+| our cats, ~20 min dawn transition | 3 | 6.9, 32.7, **88.9** ← false positives |
+
+The 8 % threshold separates these cleanly outside the dawn window. This is the
+first validation on data the thresholds were *not* fitted to.
+
+A subtlety that cost time: the ginger test needs `S > 90`, and the outside
+scene's *background* saturation ceiling at night is only 60–70 — which looks
+fatal but is not. The cat itself reaches `satP99 = 136`. Measure saturation on
+the animal, not the scene.
 
 ## 3. Timings and costs measured so far
 
@@ -74,7 +100,8 @@ assuming.
 | Decoding a buffered ~2 s segment on demand | 0.146 s |
 | Per-event latency, `BUFFER_MODE=off` (dial out per event) | ~4.0 s, 0 % idle CPU, ~96 MB, no pre-trigger frames |
 | Per-event latency, `BUFFER_MODE=decoded` (frames in RAM) | 0.25 s, **24 % idle CPU**, ~295 MB, ~2.7 s history |
-| Per-event latency, `BUFFER_MODE=segments` (ffmpeg remux, default) | ~1.0 s, 0 % idle CPU, ~50 MB, ~10–12 s history |
+| Per-event latency, `BUFFER_MODE=segments` (ffmpeg remux, default) | **0.28–0.52 s** measured over the tunnel, ~1 % idle CPU, ~250 MB total incl. 2 ffmpeg, ~10–12 s history |
+| RTSP-over-VPN stability | recorders restarted **33–40 times** overnight; the supervisor recovers each time, but the buffer has gaps |
 | Rolling 10 s compressed window on disk (`/dev/shm/ocp`) | ~650 KB |
 | Snapshot posted by Home Assistant | ~30 KB JPEG |
 | Frame grabbed directly from RTSP | ~243 KB, 1024×576 |
@@ -153,6 +180,43 @@ abstain.
   `systemctl restart wg-quick@wg0`, not `wg-quick up`.
 - Anything touching the cameras, the UDM, or HA needs Dima; Dave cannot change
   that hardware remotely.
+- HA currently POSTs to **both** `192.168.1.224` (Dave on Dima's LAN) and
+  `192.168.7.4` (Dave over the tunnel). Exactly one works at a time depending
+  on where Dave is, and that is deliberate — a single hostname cannot cover
+  both. Use short curl timeouts so the dead one does not stall the automation.
+  The real fix is moving the server onto a box at Dima's (§5).
+
+### Detection gotchas (found the hard way)
+
+- **The background model can deadlock.** It refuses to learn from a busy scene
+  so a loitering cat is not absorbed — but a *stale* model makes every frame
+  look busy, so it never updates, so it stays stale forever. It ran a whole
+  night with a daylight model, flagging 23 % of every frame as motion and
+  making all 19 real events uninformative. Everything looks healthy while this
+  happens. Fixed by relearning after `BG_STALE_AFTER` consecutive busy checks;
+  if verdicts look strange, check `motion_px` for a suspiciously constant value.
+- **`detect.ROI` is obsolete and now harmful.** It was chosen when whole frames
+  were scored, to exclude the 24 %-warm wooden gate. Scoring is now restricted
+  to *motion* pixels, so static warm objects cannot contribute anyway — and the
+  crop (`x < 0.63`) hides cats on the right-hand side of the frame entirely.
+  Widening it to roughly `y > 0.30` recovered 4 previously unscorable clips and
+  lost nothing. Not yet changed in the code.
+- **Moving sunlight at dawn reads as a ginger cat.** For ~20 minutes a patch of
+  warm sun sweeps across the tan planter; it counts as motion and as ginger,
+  and produced 88.9 % on a frame containing **no animal at all**. Shadow
+  suppression does not help (that catches darkening; this is brightening) and
+  nor does chromaticity (warm light genuinely reddens a tan pot). Candidate
+  fixes: a much shorter background window, or an object detector used as a
+  "is it even an animal" gate. Interim option: return `unmeasurable` during
+  rapid light change rather than guessing.
+- **A small COCO detector (NanoDet) is poor on IR close-ups** — 0–13 % hit rate
+  on the indoor night clips, but **87 %** on the one clip with a well-framed
+  cat at a distance. It fails on exactly the frames background subtraction also
+  fails on, so it does not rescue them. It is a plausible fit for the *dawn*
+  problem above, where the scene is daylit and the animal distant. Note
+  `ultralytics` pulls ~2 GB of CUDA wheels; prefer an ONNX export under
+  `cv2.dnn`, and note OpenCV 5 needs `cv2.dnn.ENGINE_CLASSIC` plus explicit
+  output names for older models.
 
 ## 5. Running the server code
 
