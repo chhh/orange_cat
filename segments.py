@@ -102,6 +102,16 @@ class SegmentRecorder:
 
     def _supervise(self):
         while not self._stop.is_set():
+            # Recreate every time, not just at start(): /dev/shm can be
+            # cleared out from under us by a reboot or by hand, and ffmpeg
+            # will not make the directory itself -- it just fails to open the
+            # segment, forever.
+            try:
+                os.makedirs(self.dir, exist_ok=True)
+            except OSError as exc:
+                self.last_error = f"cannot create {self.dir}: {exc}"
+                self._stop.wait(RESTART_DELAY)
+                continue
             try:
                 self.proc = subprocess.Popen(
                     self._command(), stdout=subprocess.DEVNULL,
