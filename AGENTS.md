@@ -257,7 +257,10 @@ change.
 ### Commands
 
 ```
-uv run server.py                  # webhook receiver on 0.0.0.0:8080
+./run-server.sh start             # detached; survives closing the terminal
+./run-server.sh status            # health + buffer state
+./run-server.sh stop              # server + its ffmpeg recorders
+uv run server.py                  # foreground, for debugging
 curl localhost:8080/health        # buffers warm? which host/cameras?
 curl -X POST localhost:8080/motion -H 'content-type: application/json' \
      -d '{"camera": "outside"}'   # fake an event
@@ -270,8 +273,10 @@ Bootstrap: the first event per camera at a given resolution has no background
 model and returns `no_background`; the model seeds itself and later events work.
 Running `capture.py` for a while first avoids that.
 
-For anything long-running use a systemd unit or `tmux`; the RTSP handles are
-reconnected by the recorder threads on failure.
+For anything long-running use `./run-server.sh start`, which `setsid`s the
+process into its own session so it outlives the terminal or agent session that
+launched it (logs to `frames/server.log`). A systemd unit would be better still.
+The RTSP handles are reconnected by the recorder threads on failure.
 
 ## 6. Setting up Home Assistant
 
