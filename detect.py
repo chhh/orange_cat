@@ -84,10 +84,16 @@ WARM_PCT_THRESHOLD = 8.0
 
 # How much more ginger the animal is than the scene immediately around it, in
 # percentage points. See `warm_margin` for the measured populations: intruders
-# 8.3-48.9, residents and possum at most 2.5. 5.0 sits in that gap. This is
-# what makes the dawn window safe, so it carries the precision requirement --
-# do not raise 8.0 above to compensate for anything, that was tried and it
-# costs real intruder clips.
+# 8.3-48.9, residents and possum at most 2.5. 5.0 sits in that gap. Do not
+# raise WARM_PCT_THRESHOLD to compensate for anything here -- that was tried
+# and it costs real intruder clips.
+#
+# This covers one of the two dawn failures and NOT the other. It catches a
+# resident *animal* reddened by sunrise, which is what the labelled 06:14:45
+# clip is. It does nothing for sunrise falling on an empty patio: live on
+# 2026-08-18 the planter and wall scored warm 48-61% at a margin of 27-47pp,
+# sailing past this test, and only `bg_corr` rejected them. Neither feature
+# is redundant; do not drop one because the other looks sufficient.
 WARM_MARGIN_THRESHOLD = 5.0
 
 # Above this, the "motion" is not an object at all -- it is the background

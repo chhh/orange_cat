@@ -97,6 +97,23 @@ first validation on data the thresholds were *not* fitted to.
 through the live code and now scores **30/30, no misses and no false alarms**
 (it was 28/30, the two dawn clips being the failures). See §9.
 
+**First live night, 2026-08-17/18.** 44 overnight events, **no false
+positives**. Dima confirms the stray did not visit, so this validates
+*precision only* — the new code has still never seen the intruder, and recall
+is untested live. Two results worth keeping:
+
+- The dawn false positive reproduced and was **correctly rejected**: 05:56–06:10
+  scored `warm` 48–61 % with a surround margin of 27–47 pp on frames containing
+  no animal (verified by eye — sunrise on the tan planter). `warm_margin` sailed
+  straight past it; **only `bg_corr` caught it**. The two dawn failure modes are
+  different mechanisms and need different features — see the comment on
+  `WARM_MARGIN_THRESHOLD`.
+- For 8.5 hours the detector reported *zero* motion pixels, which looks broken
+  and is not. Frame-wide 5 000–10 000 px were changing while **0–3** fell inside
+  the ROI: wind in the bamboo and the doorway, both outside the crop. Protect
+  triggers on them; the ROI correctly ignores them. Before debugging a silent
+  night, check where the changed pixels are, not how many.
+
 A subtlety that cost time: the ginger test needs `S > 90`, and the outside
 scene's *background* saturation ceiling at night is only 60–70 — which looks
 fatal but is not. The cat itself reaches `satP99 = 136`. Measure saturation on
