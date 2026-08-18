@@ -50,8 +50,8 @@ app = FastAPI()
 FIELDS = ["ts", "camera", "file", "verdict", "confidence", "brightness",
           "saturation", "rgb_spread", "is_ir", "warm_pct", "luma_std",
           "px", "motion_px", "motion_frac", "iso_frac", "usable",
-          "roi_px", "rel_bright", "cv", "frames", "votes", "width",
-          "height", "source", "reasoning"]
+          "roi_px", "bg_corr", "warm_margin", "rel_bright", "cv",
+          "frames", "votes", "width", "height", "source", "reasoning"]
 
 
 def record(row):
