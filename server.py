@@ -82,6 +82,28 @@ def record(row):
         writer.writerow(row)
 
 
+# Keep every frame that was scored, not just the winner, under
+# frames/events/<camera>-<stamp>/NN.jpg.
+#
+# Added 2026-08-18 at Dima's request, and it immediately earned itself: the
+# single "best" frame the server kept was hiding the fact that the buffer was
+# serving footage a minute stale. One frame per event cannot show that; the
+# burst can. Costs ~1.5 MB per event, so it is opt-out.
+SAVE_BURST = os.getenv("SAVE_BURST", "1") not in ("0", "false", "no")
+
+# A warm buffer is not the same thing as a CURRENT buffer, and conflating the
+# two cost a whole night of detections on 2026-08-17/18. The ffmpeg recorder
+# restarted 40 times over the VPN that night; after a restart the rolling
+# window refills from wherever the stream resumes, and events were being
+# scored against footage ~70 s old. Ten animals -- cats and two skunks,
+# confirmed by Dima against Protect's own clips -- were each scored as an
+# empty patio, because by the time we looked at the "buffered" frames the
+# animal had not arrived in them yet.
+#
+# So: if the newest complete segment is older than this, the buffer is not
+# describing now. Dial out for fresh frames instead and pay the ~4 s.
+MAX_BUFFER_AGE = float(os.getenv("MAX_BUFFER_AGE", "20"))
+
 BURST = 15
 
 # How frames are on hand when a notification arrives. Measured on two cameras:
@@ -211,6 +233,37 @@ def score_frame(frame, camera):
     return verdict, reasoning, stats, info, ir_feat
 
 
+def _buffer_is_current(camera, age):
+    """Is the buffered video recent enough to describe the event?"""
+    if age is None or age <= MAX_BUFFER_AGE:
+        return True
+    print(f"  {camera}: buffer is {age:.0f}s stale (limit "
+          f"{MAX_BUFFER_AGE:.0f}s) -- ignoring it and grabbing fresh frames",
+          flush=True)
+    return False
+
+
+def _save_burst(frames, scored, camera, stamp):
+    """Write every scored frame, in order, with its own verdict in the name.
+
+    The order is the order they were voted on, so a burst that turns out to be
+    stale, gappy, or duplicated is visible at a glance in the file listing --
+    which is the failure this exists to catch. The per-frame verdict is in the
+    filename so a directory listing already tells you where the classifier
+    disagreed with itself, without opening anything.
+    """
+    d = f"{EVENT_DIR}/{camera}-{stamp}"
+    try:
+        os.makedirs(d, exist_ok=True)
+        for i, (frame, s) in enumerate(zip(frames, scored)):
+            if frame is None:
+                continue
+            px = s[3].get("motion_px", 0)
+            cv2.imwrite(f"{d}/{i:02d}-{s[0]}-px{px}.jpg", frame)
+    except OSError as exc:
+        print(f"  could not save burst: {exc}", flush=True)
+
+
 @app.post("/motion")
 async def motion(request: Request, image: UploadFile | None = None,
                  camera: str = Form("outside")):
@@ -248,13 +301,20 @@ async def motion(request: Request, image: UploadFile | None = None,
                          if BUFFER_MODE == "segments"
                          else buffered.get(camera,
                                            stream_url(camera)).snapshot(BURST))
-                if extra:
+                age = (buffered.get(camera, stream_url(camera)).age()
+                       if BUFFER_MODE == "segments" else None)
+                if extra and _buffer_is_current(camera, age):
                     # Posted frame may differ in size from the stream; scoring
                     # mixes fine, but keep them separate for the record.
                     frames = extra + [f for f in frames
                                       if f is not None
                                       and f.shape == extra[0].shape]
                     source = f"posted+{BUFFER_MODE}"
+                elif extra:
+                    fresh = grab_burst(stream_url(camera))
+                    if fresh:
+                        frames = fresh
+                        source = "posted+rtsp_fresh"
             except Exception as exc:
                 print(f"  buffer unavailable, using posted frame only: {exc}",
                       flush=True)
@@ -272,8 +332,10 @@ async def motion(request: Request, image: UploadFile | None = None,
         frames, source = [], "rtsp_cold"
         if BUFFER_MODE == "segments":
             # Decode the seconds we already have; includes pre-trigger frames.
-            frames = segments.get(camera, url).frames(BURST)
-            source = "segments"
+            buf = segments.get(camera, url)
+            if _buffer_is_current(camera, buf.age()):
+                frames = buf.frames(BURST)
+                source = "segments"
         elif BUFFER_MODE == "decoded":
             frames = streamer.get(camera, url).snapshot(BURST)
             source = "ring_buffer"
@@ -292,6 +354,10 @@ async def motion(request: Request, image: UploadFile | None = None,
                 "source": source}
 
     scored = [score_frame(f, camera) for f in frames]
+
+    if SAVE_BURST:
+        _save_burst(frames, scored, camera, stamp)
+
     verdict, confidence, tally = detect.vote([s[0] for s in scored])
 
     if verdict is None:
