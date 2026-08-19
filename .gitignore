@@ -27,3 +27,6 @@ ocp-segments/
 .vscode/
 *.swp
 .DS_Store
+
+# detector weights (13MB, regenerate: see AGENTS.md)
+models/

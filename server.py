@@ -37,6 +37,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Form, Request, UploadFile
 import uvicorn
 
+import animal
 import detect
 import segments
 import streamer
@@ -52,7 +53,8 @@ app = FastAPI()
 FIELDS = ["ts", "camera", "file", "verdict", "confidence", "brightness",
           "saturation", "rgb_spread", "is_ir", "warm_pct", "luma_std",
           "px", "motion_px", "motion_frac", "iso_frac", "usable",
-          "roi_px", "bg_corr", "warm_margin", "rel_bright", "cv",
+          "roi_px", "bg_corr", "warm_margin", "det_conf", "box_frac",
+          "rel_bright", "cv",
           "frames", "votes", "width", "height", "source", "reasoning"]
 
 
@@ -231,6 +233,12 @@ def _close_buffers():
     segments.stop_all()
 
 
+# Find the animal first, then ask what colour it is. The motion path is kept
+# underneath: it still feeds the background model, still fills the diagnostic
+# columns in events.csv, and still decides if the model file is missing.
+USE_DETECTOR = os.getenv("USE_DETECTOR", "1") not in ("0", "false", "no")
+
+
 def score_frame(frame, camera):
     """Score one frame. Returns (verdict, reasoning, stats, info, ir)."""
     mask, info = detect.motion_mask(frame, camera)
@@ -244,6 +252,25 @@ def score_frame(frame, camera):
         stats = measure(frame, mask)
         if stats["is_ir"]:
             ir_feat = detect.ir_features(frame, mask, camera)
+
+    if USE_DETECTOR and animal.available():
+        found = animal.best_box(frame)
+        if found is None:
+            # Abstain rather than vote. On a real raid the detector fired on
+            # as few as 1 of 15 frames, so treating "no detection" as
+            # evidence of absence would drown every true positive in its own
+            # burst.
+            return ("no_animal", "no animal detected in frame",
+                    stats, {**info, "det_conf": None}, ir_feat)
+        feats = detect.box_features(frame, found["box"])
+        verdict, _, reasoning = detect.classify_detection(feats)
+        info = {**info, "det_conf": found["conf"],
+                "box_frac": (feats or {}).get("box_frac"),
+                "warm_margin": (feats or {}).get("warm_margin")}
+        if feats:
+            stats = {**stats, "warm_pct": feats["warm_pct"]}
+        return verdict, reasoning, stats, info, ir_feat
+
     verdict, _, reasoning = detect.classify(stats, info, ir_feat)
     return verdict, reasoning, stats, info, ir_feat
 
@@ -279,9 +306,16 @@ def _self_check(camera, info, roi_px):
 
     # Nothing changing over many events, when events keep arriving, means
     # something upstream is feeding us the wrong frames.
-    if len(mine) >= 8 and all(p == 0 for p in mine[-8:]):
+    if (not (USE_DETECTOR and animal.available())
+            and len(mine) >= 8 and all(p == 0 for p in mine[-8:])):
         out.append("8 consecutive events with zero motion pixels -- "
                    "detector may be blind (check buffer freshness and ROI)")
+
+    # Under the detector path the equivalent blindness is the model failing
+    # to load, which would silently drop every event back to abstaining.
+    if USE_DETECTOR and not animal.available():
+        out.append(f"animal detector unavailable ({animal.MODEL_PATH}) -- "
+                   "falling back to the motion path")
 
     # A model that has not been written recently is not tracking the light.
     try:

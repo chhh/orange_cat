@@ -462,6 +462,48 @@ Conventions: plain scripts, run with `uv run`; comments explain *why* a number
 is what it is, with the measurement that produced it — keep doing that when you
 change a threshold.
 
+### Detector-first front end (2026-08-19) — current design
+
+The motion-mask front end was replaced. It failed on three of three confirmed
+raids, and its failures were structural rather than tuning: it needs a
+background model that tracks the light, an ROI narrow enough to exclude the
+gate, and an animal big enough in frame. `animal.py` runs a YOLOv8n ONNX
+export under `cv2.dnn` and needs none of those.
+
+Measured over 5 labelled intruder clips, 24 resident clips, the possum, 3
+confirmed live raids, and the 14 known daytime false positives:
+
+| | old motion path | detector path |
+|---|---|---|
+| labelled clips | 30/30 | 30/30 |
+| confirmed live raids | **0/3** | **2/3** |
+| sunlight false positives | 12 fired | **0 detected** |
+| person false positives | 2 fired | **0** (person class excluded) |
+
+Colour is scored inside the box at `SAT_MIN_BOX = 40`, not the mask's 90 — a
+box is nearly all animal where a mask was half wall, so the floor can be low
+enough to survive dim light at range. The discriminator is the **margin** over
+the surrounding band, not absolute warmth: intruder 30.1–54.7 pp against every
+resident ≤ 14.7 pp, while warm % alone overlaps (a resident at sunrise hit
+30.4 % against the intruder's 30.7 % floor).
+
+Two things to know before touching it:
+
+- **A frame with no detection ABSTAINS, it does not vote "not orange".** The
+  detector fired on as few as 1 of 15 frames on a real raid, so counting
+  no-detection frames as absence would drown every true positive.
+- **Species labels are worthless** — one burst returned cat, then dog, then
+  cow for the same animal. The box is the signal; colour does the ID.
+
+The remaining miss is 04:47:37, a 1–1 split on only 2 detections. It is the
+same visit as 04:57:11, which fires at confidence 1.00, so the raid is still
+caught. Not worth tuning to a single event.
+
+The model is gitignored. Regenerate with:
+`pip install ultralytics && yolo export model=yolov8n.pt format=onnx imgsz=640 opset=12`
+then put `yolov8n.onnx` in `models/`. Validate with `uv run evaluate_detector.py`.
+Set `USE_DETECTOR=0` to fall back to the motion path.
+
 ### Night of 2026-08-18/19 — the intruder was seen and missed
 
 Plumbing was clean all night (buffers fresh, 0 recorder restarts, background

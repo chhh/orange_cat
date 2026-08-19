@@ -300,7 +300,20 @@ def bg_correlation(grey, bgg, mask):
     return round(float(np.corrcoef(a, b)[0, 1]), 3)
 
 
-def warm_mask(img):
+# Saturation floor for "this pixel is ginger".
+#
+# 90 is right for a motion mask and wrong for a detector box, and the
+# difference is not about the cat -- it is about what else is in the
+# selection. A motion mask is half wall, so the test has to be strict enough
+# that wall cannot pass it. A detector box is nearly all animal, so it can
+# afford a floor low enough to survive dim light at range, which is exactly
+# where the old one failed: the stray measured ~3% ginger at S>90 on the
+# night it raided twice, against 29-55% at S>40.
+SAT_MIN_MASK = 90
+SAT_MIN_BOX = 40
+
+
+def warm_mask(img, sat_min=SAT_MIN_MASK):
     """Pixels that read as ginger: warm hue, saturated, not in shadow.
 
     Hue wraps at both ends of the red range. Lives here rather than in
@@ -309,7 +322,7 @@ def warm_mask(img):
     """
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     h, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
-    return ((h <= 22) | (h >= 170)) & (s > 90) & (v > 50)
+    return ((h <= 22) | (h >= 170)) & (s > sat_min) & (v > 50)
 
 
 def surround_mask(mask, camera, shape, thickness=25):
@@ -449,4 +462,81 @@ def classify(stats, info, ir=None):
     # spray a resident.
     if warm_enough and margin is not None:
         return "no_orange", "medium", reason + " -- lit warm, not ginger"
+    return "no_orange", "medium", reason
+
+
+# --- Detector path -------------------------------------------------------
+# Thresholds for scoring inside an animal detector's box rather than a motion
+# mask. Set from measurement in `evaluate.py --detector`; see the numbers
+# recorded beside each one.
+
+def box_features(frame, box, pad=30):
+    """Ginger inside the animal's box, and how much it beats its surroundings.
+
+    The margin is the same idea as `warm_margin` on a motion mask and exists
+    for the same reason: at sunrise the light reddens everything, so absolute
+    warmth cannot tell a ginger cat from a black-and-white one standing in
+    orange light. Here the comparison is the band of scene just outside the
+    box, which is the closest available sample of "what the light is doing
+    right now" without another model to keep current.
+    """
+    h, w = frame.shape[:2]
+    x0, y0, x1, y1 = box
+    x0, y0 = max(0, x0), max(0, y0)
+    x1, y1 = min(w, x1), min(h, y1)
+    if x1 - x0 < 8 or y1 - y0 < 8:
+        return None
+
+    warm = warm_mask(frame, SAT_MIN_BOX)
+    inside = warm[y0:y1, x0:x1]
+
+    ring = np.zeros((h, w), bool)
+    ring[max(0, y0 - pad):min(h, y1 + pad),
+         max(0, x0 - pad):min(w, x1 + pad)] = True
+    ring[y0:y1, x0:x1] = False
+
+    warm_pct = float(inside.mean()) * 100
+    margin = (warm_pct - float(warm[ring].mean()) * 100
+              if ring.sum() > 200 else None)
+    return {"warm_pct": round(warm_pct, 3),
+            "warm_margin": None if margin is None else round(margin, 3),
+            "box_frac": round((x1 - x0) * (y1 - y0) / float(w * h), 5)}
+
+
+# Measured over 5 labelled intruder clips, 3 confirmed live raids, 24 resident
+# clips and the possum, all scored inside a detector box:
+#
+#                        warm%        margin
+#   intruder          30.7 - 57.1   30.1 - 54.7
+#   residents          0.0 - 30.4   -6.8 - 14.7
+#   possum                    1.3          0.5
+#
+# The margin is what separates them -- a 2x gap, 14.7 to 30.1 -- and warm% on
+# its own does NOT: a resident at sunrise reached 30.4 against the intruder's
+# floor of 30.7. Both are required anyway, because the margin is a difference
+# of two small numbers when the box is tiny and warm% keeps that honest.
+BOX_WARM_THRESHOLD = 25.0
+BOX_MARGIN_THRESHOLD = 20.0
+
+
+def classify_detection(feats):
+    """Verdict for one frame in which an animal was detected.
+
+    Returns (verdict, confidence, reasoning). `feats` is `box_features`
+    output; None means the box was unusable and the frame abstains.
+    """
+    if feats is None:
+        return "unmeasurable", "none", "detector box too small to measure"
+
+    warm, margin = feats["warm_pct"], feats["warm_margin"]
+    if margin is None:
+        return ("unmeasurable", "none",
+                f"{warm}% ginger in box but no surround to compare against "
+                "-- animal at the frame edge")
+
+    reason = (f"detector box; {warm}% ginger (threshold "
+              f"{BOX_WARM_THRESHOLD}%), {margin}pp over surround "
+              f"(threshold {BOX_MARGIN_THRESHOLD}pp)")
+    if warm > BOX_WARM_THRESHOLD and margin > BOX_MARGIN_THRESHOLD:
+        return "orange_cat", "medium", reason
     return "no_orange", "medium", reason
