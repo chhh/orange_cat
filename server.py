@@ -50,7 +50,7 @@ load_dotenv()
 app = FastAPI()
 
 
-FIELDS = ["ts", "camera", "file", "verdict", "confidence", "brightness",
+FIELDS = ["ts", "camera", "file", "verdict", "class", "confidence", "brightness",
           "saturation", "rgb_spread", "is_ir", "warm_pct", "luma_std",
           "px", "motion_px", "motion_frac", "iso_frac", "usable",
           "roi_px", "bg_corr", "warm_margin", "det_conf", "box_frac",
@@ -503,7 +503,9 @@ async def motion(request: Request, image: UploadFile | None = None,
     path = f"{EVENT_DIR}/{camera}-{stamp}.jpg"
     cv2.imwrite(path, keep)
 
+    kind, _ = _notify_class(verdict, confidence, tally)
     row = {"ts": stamp, "camera": camera, "file": path, "verdict": verdict,
+           "class": kind,
            "confidence": round(confidence, 3), "source": source,
            "reasoning": reasoning, "frames": len(frames),
            "votes": ";".join(f"{k}={v}" for k, v in sorted(tally.items())),
