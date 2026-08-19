@@ -24,9 +24,11 @@ comment on that constant below, and segments.py for the default.
 Run:  uv run server.py            (listens on 0.0.0.0:8080)
 """
 
+import collections
 import csv
 import os
 import threading
+import time
 from datetime import datetime
 
 import cv2
@@ -124,7 +126,8 @@ def health():
     return {"ok": True, "host": os.getenv("CAT_HOST", "192.168.1.1"),
             "cameras": list(CAMERAS), "buffer_mode": BUFFER_MODE,
             "buffers": (segments.all_status() if BUFFER_MODE == "segments"
-                        else streamer.all_status())}
+                        else streamer.all_status()),
+            "warnings": list(_warnings)}
 
 
 @app.on_event("startup")
@@ -243,6 +246,56 @@ def score_frame(frame, camera):
             ir_feat = detect.ir_features(frame, mask, camera)
     verdict, _, reasoning = detect.classify(stats, info, ir_feat)
     return verdict, reasoning, stats, info, ir_feat
+
+
+# Every failure this project has had was SILENT and looked exactly like a
+# quiet night: stale buffer frames (2026-08-17), a "relearn" that only nudged
+# the model 5% (2026-08-18), an ROI that cropped out the animals. In each case
+# the verdict column read clean while the detector was blind. Nothing can tell
+# "the patio was empty" from "I was looking at the wrong minute" -- so the
+# server has to watch its own vital signs and say when they look wrong.
+_recent = collections.deque(maxlen=12)
+_warnings = []
+
+
+def _self_check(camera, info, roi_px):
+    """Flag states that mean the detector is not seeing, whatever it reported.
+
+    These are checks on the SHAPE of recent measurements, not on verdicts --
+    a verdict cannot reveal that it was computed against the wrong minute.
+    """
+    _recent.append((camera, int(info.get("motion_px") or 0)))
+    mine = [px for c, px in _recent if c == camera]
+    out = []
+
+    # A near-constant, large motion area across events is not motion. Real
+    # animals differ frame to frame; a wrong background model does not.
+    if len(mine) >= 5 and roi_px:
+        last = mine[-5:]
+        hi, lo = max(last), min(last)
+        if hi > 0.02 * roi_px and hi - lo <= 0.05 * hi:
+            out.append(f"motion_px pinned near {hi} across 5 events -- "
+                       "background model is probably wrong, not the scene")
+
+    # Nothing changing over many events, when events keep arriving, means
+    # something upstream is feeding us the wrong frames.
+    if len(mine) >= 8 and all(p == 0 for p in mine[-8:]):
+        out.append("8 consecutive events with zero motion pixels -- "
+                   "detector may be blind (check buffer freshness and ROI)")
+
+    # A model that has not been written recently is not tracking the light.
+    try:
+        age = time.time() - os.path.getmtime(detect._bg_path(camera))
+        if age > 3 * BG_REFRESH_SECONDS:
+            out.append(f"background model for {camera} is {age / 60:.0f} min "
+                       "old -- refresh thread may be stuck")
+    except OSError:
+        out.append(f"no background model on disk for {camera}")
+
+    for w in out:
+        print(f"  !! {camera}: {w}", flush=True)
+    _warnings[:] = [f"{camera}: {w}" for w in out]
+    return out
 
 
 def _buffer_is_current(camera, age):
@@ -397,6 +450,7 @@ async def motion(request: Request, image: UploadFile | None = None,
            "width": keep.shape[1], "height": keep.shape[0],
            **stats, **{k: v for k, v in info.items() if k != "reason"},
            **(ir_feat or {})}
+    _self_check(camera, info, info.get("roi_px") or 0)
     record(row)
 
     mode = "IR " if stats["is_ir"] else "COL"
