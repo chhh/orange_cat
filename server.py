@@ -184,7 +184,19 @@ def _refresh_backgrounds():
                 streak = _busy_streak.get(cam, 0)
 
                 if quiet:
-                    detect.update_background(cam, frame)
+                    # alpha=1.0: REPLACE the model, do not blend into it.
+                    # The default 0.05 moves it 5% toward the current frame,
+                    # which at one check per BG_REFRESH_SECONDS needs ~45
+                    # cycles -- nearly four hours -- to catch up. The guard
+                    # then re-fires every 20 minutes forever while every
+                    # event in between is scored against a model that is
+                    # still wrong. Seen on 2026-08-18: the log filled with
+                    # "treating the model as stale and relearning" all night
+                    # while events reported a steady ~88000 px of "motion"
+                    # that was really the wall and the planter under changed
+                    # light. A model declared stale is wrong, so throw it
+                    # away rather than averaging the wrong answer in.
+                    detect.update_background(cam, frame, alpha=1.0)
                     _busy_streak[cam] = 0
                 elif streak + 1 >= BG_STALE_AFTER:
                     print(f"  {cam}: {streak + 1} busy checks in a row "
