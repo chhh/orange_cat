@@ -390,6 +390,26 @@ HA already exists (Pi at `192.168.1.133`, at Dima's). To recreate or extend it:
 Debugging: HA → Settings → System → Logs for `rest_command` errors;
 `frames/events.csv` and the server's stdout on the detector side.
 
+## 6b. Notification classes (added 2026-08-19 at Dima's request)
+
+`/motion` returns a `class` field so Home Assistant does not need to know our
+verdict vocabulary or which verdicts are decisive:
+
+| class | headline | meaning |
+|---|---|---|
+| `intruder` | Orange cat at the door | `orange_cat` at ≥ 0.6 confidence |
+| `not_orange` | An animal, not the orange cat | `no_orange` at ≥ 0.6 confidence |
+| `unsure` | An animal, but could not tell which | something was there; frames disagreed or could not be scored |
+| `none` | Nothing seen | no animal detected in any frame |
+
+**`not_orange` is not "a resident".** Nothing here identifies Dima's cats
+positively — the class also covers the possum and the skunks. Do not word a
+notification as if it did.
+
+The `unsure` class earns its place immediately: the 04:47:37 raid, a 1–1 split
+on two detections, reports `unsure` instead of a confidently wrong
+`not_orange`.
+
 ## 7. Notifying several people instead of one
 
 Today the automation calls a single `notify.mobile_app_<phone>` service. Two

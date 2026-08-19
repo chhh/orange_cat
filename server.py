@@ -363,6 +363,32 @@ def _save_burst(frames, scored, camera, stamp):
         print(f"  could not save burst: {exc}", flush=True)
 
 
+# Home Assistant should not have to know our verdict vocabulary, or which
+# verdicts are decisive. It gets one field it can branch on.
+#
+# Note "not_orange" is honest about what we actually know: the animal is not
+# ginger. That covers Dima's black-and-white cats, but also the possum and the
+# two skunks -- nothing here identifies a resident positively, and a
+# notification should not claim it does.
+MIN_NOTIFY_CONFIDENCE = 0.6
+
+
+def _notify_class(verdict, confidence, tally):
+    """(class, headline) for the notification layer.
+
+    Classes: intruder / not_orange / unsure / none.
+    """
+    decisive = sum(v for k, v in tally.items() if k in detect.DECISIVE)
+    if verdict == "orange_cat" and confidence >= MIN_NOTIFY_CONFIDENCE:
+        return "intruder", "Orange cat at the door"
+    if verdict == "no_orange" and confidence >= MIN_NOTIFY_CONFIDENCE:
+        return "not_orange", "An animal, not the orange cat"
+    if decisive or verdict == "unmeasurable":
+        # Something was there; the frames disagreed or could not be scored.
+        return "unsure", "An animal, but could not tell which"
+    return "none", "Nothing seen"
+
+
 @app.post("/motion")
 async def motion(request: Request, image: UploadFile | None = None,
                  camera: str = Form("outside")):
@@ -493,7 +519,9 @@ async def motion(request: Request, image: UploadFile | None = None,
           f"{keep.shape[1]}x{keep.shape[0]}  "
           f"votes={row['votes']}  src={source}", flush=True)
 
+    kind, headline = _notify_class(verdict, confidence, tally)
     return {"ok": True, "camera": camera, "verdict": verdict,
+            "class": kind, "headline": headline,
             "confidence": round(confidence, 3), "frames": len(frames),
             "votes": tally, "source": source, "stats": stats,
             "motion": info, "ir": ir_feat, "reasoning": reasoning}
