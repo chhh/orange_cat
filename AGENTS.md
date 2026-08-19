@@ -462,6 +462,30 @@ Conventions: plain scripts, run with `uv run`; comments explain *why* a number
 is what it is, with the measurement that produced it — keep doing that when you
 change a threshold.
 
+### Night of 2026-08-18/19 — the intruder was seen and missed
+
+Plumbing was clean all night (buffers fresh, 0 recorder restarts, background
+current, no stale-buffer fallbacks), so the 2026-08-17 buffer fix held. 16
+events, no false positives, and **the orange tabby appeared at 04:57:11 and
+was logged `no_animal`, motion_px 0.**
+
+Replaying its 15 saved burst frames shows **three** gates, each of which
+blocks it on its own — so fixing any one of them changes nothing:
+
+| Gate | Value | Threshold |
+|---|---|---|
+| ROI `x < 0.63` | cat at x≈0.72–0.83 | cropped out entirely |
+| `ISO_MIN` | `iso = 0.0103` | 0.015 → 11/15 frames `unmeasurable` |
+| colour test | `warm_pct` 3.9 %, margin 3.47 pp | 8 % / 5 pp → votes `no_orange` 7–3 |
+
+The third is the deep one and it is new information: **at night and at
+distance the ginger signal itself collapses.** The `S > 90` term in
+`warm_mask` is what fails — dim light at range desaturates the fur. §2's note
+that "the cat itself reaches satP99 = 136" was measured on a *near* animal
+under the patio light; it does not hold across the patio. Any fix has to
+address all three together, and the colour threshold cannot simply be lowered
+without re-running §9 against the false positives it was raised to stop.
+
 ## 9. Validating a threshold change (`evaluate.py`)
 
 `uv run evaluate.py` replays Dima's 30 hand-sorted clips through the *live*
