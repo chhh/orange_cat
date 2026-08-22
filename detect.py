@@ -515,7 +515,24 @@ def box_features(frame, box, pad=30):
 # its own does NOT: a resident at sunrise reached 30.4 against the intruder's
 # floor of 30.7. Both are required anyway, because the margin is a difference
 # of two small numbers when the box is tiny and warm% keeps that honest.
-BOX_WARM_THRESHOLD = 25.0
+#
+# 25.0 -> 20.0 on 2026-08-21. The orange cat, confirmed by Dave from the
+# footage, was photographed at 04:19:36 and measured warm 23.18% with margin
+# 22.64pp -- it passed the margin test and failed only the absolute floor, by
+# 1.8 points. It was a distant, dim frame: exactly the "ginger signal
+# collapses at range" case recorded above.
+#
+# Lowering the floor is safe because the MARGIN does the discriminating. No
+# resident has ever reached margin > 20pp: across 46 confirmed resident frames
+# from live events, zero pass at any warm floor from 25 down to 18, and the
+# two residents that beat the old warm floor (25.5% and 35.4%, reddened by low
+# sun) were rejected on margin at -10.3pp and +4.2pp.
+#
+# Validated before shipping: evaluate_detector.py 5/5 intruder, 24/24 our-cats,
+# 1/1 possum, 2/3 live raids -- and evaluate.py 30/30 -- all byte-identical to
+# the numbers at 25.0. Exactly one frame in the entire corpus changes verdict,
+# and it is the 04:19 orange cat.
+BOX_WARM_THRESHOLD = 20.0
 BOX_MARGIN_THRESHOLD = 20.0
 
 

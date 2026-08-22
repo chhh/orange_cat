@@ -24,6 +24,7 @@ comment on that constant below, and segments.py for the default.
 Run:  uv run server.py            (listens on 0.0.0.0:8080)
 """
 
+import asyncio
 import collections
 import csv
 import os
@@ -121,6 +122,64 @@ BURST = 15
 #   off       0% idle CPU,  96MB, ~4.0s per event, no pre-trigger frames
 #             dial out on each event and pay the 3.1s RTSP handshake.
 BUFFER_MODE = os.getenv("BUFFER_MODE", "segments").lower()
+
+# Seconds to wait after a trigger before reading the segment buffer.
+#
+# The buffer only ever hands us PRE-trigger footage. `segments._segments()`
+# drops the file ffmpeg is still writing (a partial mp4 has no index), and
+# although SEGMENT_SECONDS is 2, `-c copy` can only cut on keyframes -- the
+# camera's GOP makes real segments ~5s. So the newest frame we can decode is
+# up to a whole segment old, and measured bursts ended 3-7s BEFORE the event:
+#
+#     event            fired      burst covered        gap
+#     2026-08-21 04:19 04:19:36   04:19:22 - 04:19:31  5s
+#     2026-08-21 04:31 04:31:10   04:30:59 - 04:31:03  7s
+#
+# Both were the orange cat arriving AT the trigger, into footage we never
+# fetched. Waiting here lets the segment containing the trigger complete.
+#
+# Default 0 keeps today's behaviour, because this trades latency for
+# coverage and that choice belongs to whoever arms the deterrent: per-event
+# latency is currently 0.28-0.52s, and a wait adds to it directly. The
+# posted-snapshot fix already covers the trigger instant whenever Home
+# Assistant sends an image, so this is insurance for the JSON-only path.
+POST_TRIGGER_WAIT = float(os.getenv("POST_TRIGGER_WAIT", "0"))
+
+# Grace after a new segment appears, so ffmpeg finishes closing it.
+SEGMENT_SETTLE = float(os.getenv("SEGMENT_SETTLE", "0.6"))
+
+
+async def _await_trigger_segment(camera):
+    """Wait until a segment newer than the trigger lands, or the wait ends.
+
+    Returns the seconds actually spent, for the log.
+    """
+    if POST_TRIGGER_WAIT <= 0 or BUFFER_MODE != "segments":
+        return 0.0
+    started = time.monotonic()
+    try:
+        buf = segments.get(camera, stream_url(camera))
+        before = buf.age()
+    except Exception:
+        return 0.0
+    while time.monotonic() - started < POST_TRIGGER_WAIT:
+        await asyncio.sleep(0.25)
+        try:
+            now = buf.age()
+        except Exception:
+            break
+        # age() resets when a new complete segment appears.
+        if now is not None and before is not None and now < before:
+            # Do NOT read immediately. age() drops at the instant ffmpeg
+            # closes one segment and opens the next, and reading on that
+            # boundary catches the file mid-flush: it decodes partially and
+            # the burst comes back short. Measured 2026-08-21 -- enabling the
+            # wait took thin bursts (<15 frames) from 2/39 events to 4/12,
+            # including one with a 92s gap before it, so it was the boundary
+            # and not contention. Let the writer finish closing.
+            await asyncio.sleep(SEGMENT_SETTLE)
+            break
+    return time.monotonic() - started
 
 
 @app.get("/health")
@@ -395,6 +454,14 @@ async def motion(request: Request, image: UploadFile | None = None,
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")[:-3]
     os.makedirs(EVENT_DIR, exist_ok=True)
 
+    # Give the segment covering the trigger time to finish writing. No-op
+    # unless POST_TRIGGER_WAIT is set; see the comment on that constant.
+    waited = await _await_trigger_segment(
+        camera if camera in CAMERAS else "outside")
+    if waited:
+        print(f"{stamp}  waited {waited:.1f}s for the trigger segment",
+              flush=True)
+
     if image is not None:
         # A posted snapshot is one frame at whatever resolution HA chose --
         # the weakest input this classifier can be given. Treat it as a
@@ -429,11 +496,33 @@ async def motion(request: Request, image: UploadFile | None = None,
                 age = (buffered.get(camera, stream_url(camera)).age()
                        if BUFFER_MODE == "segments" else None)
                 if extra and _buffer_is_current(camera, age):
-                    # Posted frame may differ in size from the stream; scoring
-                    # mixes fine, but keep them separate for the record.
-                    frames = extra + [f for f in frames
-                                      if f is not None
-                                      and f.shape == extra[0].shape]
+                    # RESIZE the posted frame to the stream's shape; do not
+                    # test shapes for equality. HA snapshots at 640x480 or
+                    # 640x360 while the stream is 1024x576, so an equality
+                    # test discarded the posted frame on EVERY event -- 327
+                    # of 327 scored exactly 15 frames, never 16 -- while the
+                    # comment here claimed it was still scored.
+                    #
+                    # That cost a confirmed sighting. On 2026-08-21 04:19 the
+                    # burst ended at :31 and the orange cat arrived at :35;
+                    # the posted snapshot caught it, `animal.best_box` finds
+                    # it there (conf 0.42 at x=0.87-0.94), and this filter
+                    # threw the frame away. The event logged no_animal.
+                    #
+                    # Resizing rather than scoring at native size is
+                    # deliberate: `detect.update_background` REPLACES the
+                    # model whenever a frame's shape differs from it, so
+                    # letting a 640x360 frame through would silently reset
+                    # the background model on every posted event.
+                    th, tw = extra[0].shape[:2]
+                    scaled = []
+                    for f in frames:
+                        if f is None:
+                            continue
+                        if f.shape[:2] != (th, tw):
+                            f = cv2.resize(f, (tw, th))
+                        scaled.append(f)
+                    frames = extra + scaled
                     source = f"posted+{BUFFER_MODE}"
                 elif extra:
                     fresh = grab_burst(stream_url(camera))
