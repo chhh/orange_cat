@@ -37,21 +37,46 @@ If zyxx ever becomes a genuinely permanent second detector running *alongside*
 the laptop, stop using this shortcut and cut a proper second peer
 (`192.168.7.5`) on the UDM, then repoint the HA automation.
 
-## Before anything else: clear the friend's data
+## Before anything else: undo Ray's accessibility setup
 
-zyxx was in daily use by someone else. Before it becomes an always-on,
-unattended box on the home LAN, sign out and remove **his** accounts — the
-email account it was set up for, and the MyChart / medical portal logins in
-particular. Do not skip this because the machine is "coming back to family";
-an unattended box that stays logged into someone's patient portal is the
-problem.
+zyxx was rebuilt on 2026-07-01 as **Mint 22.3 Cinnamon** and lent to Ray. It
+has two accounts: Dave's admin account, and **`ray`** (standard). Ray's
+session was deliberately configured in ways that are fine for a lent laptop
+and wrong for an always-on box sitting in Dave's house:
+
+- **Auto-login is ON for `ray`.** The machine boots straight into his session.
+- **Screen lock is disabled** (so he could never get trapped at a lock screen).
+- **Firefox auto-starts** with `mail.google.com` and
+  `mychartweb.ohsu.edu/MyChart/` as its homepage tabs, zoom 150 %.
+
+Together that means a power-on lands anyone in front of Ray's Gmail and his
+OHSU patient portal with no lock screen in the way. Fix before anything else:
+
+1. Disable auto-login (Login Window → Users), or switch it to Dave's account.
+2. Re-enable the screen lock.
+3. Sign Ray out of Gmail and MyChart in Firefox and clear the saved sessions,
+   or simply remove the `ray` account once he confirms he needs nothing off it
+   — he has his own desktop now.
+
+Note Ray's session also swaps Caps↔Ctrl via `setxkbmap -option ctrl:swapcaps`
+in Startup Applications, which is startling if you are not expecting it.
+
+## Access: expect to do this in person
+
+**SSH to zyxx's Mint 22 install was never established** — during the July
+setup password auth kept getting rejected despite a valid password, and the
+job was finished by hand in the GUI. So do not plan on configuring this
+remotely. Sit in front of it, and while you are there set up SSH properly
+(installing `authorized_keys` via local sudo is the method that works) so
+future maintenance of an always-on detector box is not another trip.
 
 ## Setup
 
-1. **Clear the friend's accounts** (above). Confirm which user accounts exist
-   and remove or rename as needed.
-2. **Prerequisites.** Mint 22 is Ubuntu 24.04-based and ships Python 3.12, so
-   the `>= 3.12` requirement should already be met — verify with `python3 -V`.
+1. **Undo Ray's setup** (above): auto-login, screen lock, his Firefox sessions.
+2. **Prerequisites.** zyxx runs Mint 22.3 (Ubuntu 24.04 base), which ships
+   Python 3.12, so the `>= 3.12` requirement is already met — confirm with
+   `python3 -V`. Hardware is an i7-10510U with ~16 GB RAM, comfortably above
+   what `segments` mode needs.
    ```
    sudo apt install ffmpeg
    curl -LsSf https://astral.sh/uv/install.sh | sh
