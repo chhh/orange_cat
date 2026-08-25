@@ -532,11 +532,74 @@ def box_features(frame, box, pad=30):
 # 1/1 possum, 2/3 live raids -- and evaluate.py 30/30 -- all byte-identical to
 # the numbers at 25.0. Exactly one frame in the entire corpus changes verdict,
 # and it is the 04:19 orange cat.
-BOX_WARM_THRESHOLD = 20.0
-BOX_MARGIN_THRESHOLD = 20.0
+#
+# 20.0 -> 16.0 on 2026-08-25, from 125 night events Dave labelled by eye and
+# checked twice (`ooo/labels-0825.csv`): 16 orange, 106 tuxedo, 2 people, 1
+# unidentified. Simulating `vote` over every burst frame at each floor:
+#
+#     floor   caught/16   false events   residents   people
+#       20       12            2             0          2
+#       18       13            2             0          2
+#       17-10    14            2             0          2
+#        8       14            4             2          2
+#
+# 16 sits in the middle of the flat 17-10 plateau: it catches two more real
+# raids than 20 with the SAME two false events, and residents do not appear
+# until 8, so there is real headroom rather than a cliff. The two false events
+# are PEOPLE at every floor including 20 -- they are not caused by this
+# change, and are handled by `animal.PERSON_OVERLAP` instead.
+BOX_WARM_THRESHOLD = 16.0
+BOX_MARGIN_THRESHOLD = 16.0
+
+# Ring-based IR discriminator, for the box path. The mask-based numbers above
+# (tabby 1.23-1.66 vs b&w 0.72-0.92) compare the animal against the stored
+# background model, which cannot be replayed honestly -- scoring an old frame
+# against tonight's model is one of the known lying harnesses. These compare
+# the box against the ring of scene just outside it, in the same frame, and
+# are calibrated on the 9 labelled IR events:
+#
+#     orange   rel_bright 1.399 - 1.674   cv 0.352 - 0.389
+#     tuxedo   rel_bright 0.775 - 1.423   cv 0.464 - 0.580
+#
+# Brightness alone overlaps -- one tuxedo reaches 1.423 -- so cv is required,
+# and it separates cleanly at the existing 0.42. Small sample (2 orange, 6
+# tuxedo, 1 other); revisit as more IR events are labelled.
+BOX_IR_REL_BRIGHT = 1.30
+BOX_IR_CV = IR_CV_THRESHOLD
 
 
-def classify_detection(feats):
+def box_ir_features(frame, box, pad=30):
+    """Infrared brightness inside the box against the ring just outside it.
+
+    In IR the frame is greyscale, so `warm_pct` is 0 by construction and the
+    colour path can only ever answer `no_orange`. That is exactly what it did
+    on 2026-08-20 at 00:46 and 05:09, both confirmed raids. Ginger fur
+    reflects infrared strongly and black fur absorbs it, so brightness against
+    the immediate surroundings carries the signal colour cannot.
+    """
+    h, w = frame.shape[:2]
+    x0, y0, x1, y1 = box
+    x0, y0 = max(0, x0), max(0, y0)
+    x1, y1 = min(w, x1), min(h, y1)
+    if x1 - x0 < 8 or y1 - y0 < 8:
+        return None
+
+    grey = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    inside = grey[y0:y1, x0:x1]
+
+    ring = np.zeros((h, w), bool)
+    ring[max(0, y0 - pad):min(h, y1 + pad),
+         max(0, x0 - pad):min(w, x1 + pad)] = True
+    ring[y0:y1, x0:x1] = False
+    if ring.sum() < 200:
+        return None
+
+    mean = float(inside.mean())
+    return {"rel_bright": round(mean / max(float(grey[ring].mean()), 1.0), 3),
+            "cv": round(float(inside.std()) / max(mean, 1.0), 3)}
+
+
+def classify_detection(feats, ir=None):
     """Verdict for one frame in which an animal was detected.
 
     Returns (verdict, confidence, reasoning). `feats` is `box_features`
@@ -544,6 +607,18 @@ def classify_detection(feats):
     """
     if feats is None:
         return "unmeasurable", "none", "detector box too small to measure"
+
+    # In IR there is no colour to measure, so ask the infrared question
+    # instead of returning a foregone `no_orange`.
+    if ir is not None:
+        bright = ir["rel_bright"] > BOX_IR_REL_BRIGHT
+        tight = ir["cv"] < BOX_IR_CV
+        reason = (f"IR mode; rel_bright={ir['rel_bright']} vs "
+                  f"{BOX_IR_REL_BRIGHT} (ginger 1.40-1.67, b&w 0.78-1.42), "
+                  f"cv={ir['cv']} vs {BOX_IR_CV}")
+        if bright and tight:
+            return "orange_cat", "medium", reason
+        return "no_orange", "medium", reason
 
     warm, margin = feats["warm_pct"], feats["warm_margin"]
     if margin is None:

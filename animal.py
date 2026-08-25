@@ -162,16 +162,46 @@ def detect(frame, want_person=False):
     return out_boxes
 
 
-def best_box(frame, min_area_frac=0.0008):
+def _overlap(box, other):
+    """Fraction of `box` that falls inside `other`."""
+    ax0, ay0, ax1, ay1 = box
+    bx0, by0, bx1, by1 = other
+    ix0, iy0 = max(ax0, bx0), max(ay0, by0)
+    ix1, iy1 = min(ax1, bx1), min(ay1, by1)
+    inter = max(0, ix1 - ix0) * max(0, iy1 - iy0)
+    area = (ax1 - ax0) * (ay1 - ay0)
+    return inter / area if area > 0 else 0.0
+
+
+# A person standing at the door is the one thing that must never be sprayed,
+# and the species label cannot be trusted to say so: on 2026-08-23 at 09:06
+# Dima was detected as class 17 and classified `orange_cat` at 35.3% warm.
+# The person class fired on the same frame at IoU 0.95, so the box was right
+# and only the label was wrong. Any animal box this well covered by a person
+# box is that person.
+PERSON_OVERLAP = 0.5
+
+
+def best_box(frame, min_area_frac=0.0008, check_people=True):
     """The most confident animal, or None.
 
     `min_area_frac` throws away specks too small to carry colour -- measured
     against the real raids, which occupied 1.5-4% of the frame, so this is a
     long way below anything we need to keep.
+
+    With `check_people`, the returned detection carries `person_overlap`: how
+    much of the animal box a person box covers. Callers must refuse to fire on
+    anything above `PERSON_OVERLAP`.
     """
     h, w = frame.shape[:2]
-    for d in detect(frame):
+    dets = detect(frame, want_person=check_people)
+    people = [d for d in dets if d["cls"] == PERSON_CLASS]
+    for d in dets:
+        if d["cls"] == PERSON_CLASS:
+            continue
         x0, y0, x1, y1 = d["box"]
-        if (x1 - x0) * (y1 - y0) >= min_area_frac * w * h:
-            return d
+        if (x1 - x0) * (y1 - y0) < min_area_frac * w * h:
+            continue
+        cover = max((_overlap(d["box"], p["box"]) for p in people), default=0.0)
+        return {**d, "person_overlap": round(cover, 3)}
     return None

@@ -321,8 +321,20 @@ def score_frame(frame, camera):
             # burst.
             return ("no_animal", "no animal detected in frame",
                     stats, {**info, "det_conf": None}, ir_feat)
+        # A person is the one thing that must never be fired on, and the
+        # species label will not say so -- Dima came back as class 17 on
+        # 2026-08-23 and was classified orange_cat. Abstain instead: "person"
+        # is not in detect.DECISIVE, so it neither votes nor can win.
+        if found.get("person_overlap", 0.0) >= animal.PERSON_OVERLAP:
+            return ("person",
+                    f"animal box {found['person_overlap']:.0%} covered by a "
+                    "person detection -- refusing to classify",
+                    stats, {**info, "det_conf": found["conf"]}, ir_feat)
+
         feats = detect.box_features(frame, found["box"])
-        verdict, _, reasoning = detect.classify_detection(feats)
+        box_ir = (detect.box_ir_features(frame, found["box"])
+                  if stats["is_ir"] else None)
+        verdict, _, reasoning = detect.classify_detection(feats, box_ir)
         info = {**info, "det_conf": found["conf"],
                 "box_frac": (feats or {}).get("box_frac"),
                 "warm_margin": (feats or {}).get("warm_margin")}
@@ -573,6 +585,16 @@ async def motion(request: Request, image: UploadFile | None = None,
         _save_burst(frames, scored, camera, stamp)
 
     verdict, confidence, tally = detect.vote([s[0] for s in scored])
+
+    # People are the one class that must never be fired on, and the detector
+    # sees a person in only some frames of a burst: on 2026-08-18 at 21:55 a
+    # person was found on frame 03 but not on frame 07, which is the frame
+    # that scored 45.6% warm and voted orange. One sighting anywhere in the
+    # burst is enough -- a person does not become a cat between frames.
+    if verdict == "orange_cat" and any(s[0] == "person" for s in scored):
+        print(f"{stamp}  {camera}: person seen in this burst -- "
+              f"suppressing the orange_cat verdict", flush=True)
+        verdict, confidence = "person", 0.0
 
     if verdict is None:
         # Nothing decisive -- report the most common abstention instead.
