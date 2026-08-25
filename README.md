@@ -66,12 +66,18 @@ Copy the louder file to `config/www/sounds/`, then play it the same way.
 
 ## Auto-play on detection
 
-`server.py` fires a sound through the camera speaker whenever an event is
-scored `orange_cat` (same verdict HA already notifies on). Uses `talk.py`'s
-HA REST call, non-blocking.
+`server.py` fires a sound through the camera speaker on detection. Config
+comes from `.env`:
 
 ```
-ORANGE_SOUND=noise_white.wav     # default; must exist in config/www/sounds/
+# one picked at random per trigger; each must exist in config/www/sounds/
+ORANGE_SOUNDS=noise_white.wav,siren.wav,DRILL_boost3.wav
+# position gate: fire only when animal's bbox bottom >= this fraction of
+# frame height (1.0 = at the door). 0 disables the gate.
+NEAR_DOOR_MIN_BOTTOM=0.85
+# bypass: fire on ANY motion event (foot-testing), ignoring verdict + gate
+SOUND_ON_ANY_MOTION=false
 ```
 
-Set it in `.env`. The returned JSON includes `"sound": "<file>"` when it fired.
+When it fires, the `/motion` JSON carries `"sound": "<file>"`; the server log
+prints `-> playing <file> (<why>)`.
