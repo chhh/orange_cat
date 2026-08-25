@@ -168,7 +168,9 @@ def motion_mask(frame, camera):
     roi = roi_mask(frame.shape, camera)
     roi_px = int(roi.sum())
     base = {"roi_px": roi_px, "motion_px": 0, "motion_frac": 0.0,
-            "iso_frac": 0.0, "usable": 0}
+            "iso_frac": 0.0, "usable": 0,
+            "cx": 0.0, "cy": 0.0, "bbox_w": 0.0, "bbox_h": 0.0,
+            "bbox_bottom": 0.0}
 
     if bg is None or bg.shape != frame.shape:
         return None, {**base, "reason": "no background model yet"}
@@ -191,9 +193,20 @@ def motion_mask(frame, camera):
     frac = motion_px / roi_px if roi_px else 0.0
     iso = motion_px / float(frame.shape[0] * frame.shape[1])
 
+    # Position of the animal in the frame, as fractions. The cat door is at
+    # the bottom of the ROI, so bbox_bottom/cy climb toward 1.0 as the cat
+    # approaches the flap; a distant cat sits higher and smaller.
+    x, y, w, h = stats[biggest][:4]
+    H, W = frame.shape[:2]
+
     return mask, {"reason": "", "roi_px": roi_px, "motion_px": motion_px,
                   "motion_frac": round(frac, 5), "iso_frac": round(iso, 5),
-                  "usable": int(ISO_MIN <= iso <= ISO_MAX)}
+                  "usable": int(ISO_MIN <= iso <= ISO_MAX),
+                  "cx": round((x + w / 2) / W, 3),
+                  "cy": round((y + h / 2) / H, 3),
+                  "bbox_w": round(w / W, 3),
+                  "bbox_h": round(h / H, 3),
+                  "bbox_bottom": round((y + h) / H, 3)}
 
 
 def ir_features(frame, mask, camera):

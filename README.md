@@ -63,3 +63,15 @@ ffmpeg -i DRILL.WAV -filter:a "volume=3.0" DRILL_LOUD.WAV
 ```
 
 Copy the louder file to `config/www/sounds/`, then play it the same way.
+
+## Auto-play on detection
+
+`server.py` fires a sound through the camera speaker whenever an event is
+scored `orange_cat` (same verdict HA already notifies on). Uses `talk.py`'s
+HA REST call, non-blocking.
+
+```
+ORANGE_SOUND=noise_white.wav     # default; must exist in config/www/sounds/
+```
+
+Set it in `.env`. The returned JSON includes `"sound": "<file>"` when it fired.

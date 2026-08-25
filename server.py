@@ -39,6 +39,7 @@ import detect
 import segments
 import streamer
 from capture import CAMERAS, grab, grab_burst, measure, stream_url
+from talk import play
 
 EVENT_DIR = "frames/events"
 CSV_PATH = "frames/events.csv"
@@ -50,7 +51,8 @@ app = FastAPI()
 FIELDS = ["ts", "camera", "file", "verdict", "confidence", "brightness",
           "saturation", "rgb_spread", "is_ir", "warm_pct", "luma_std",
           "px", "motion_px", "motion_frac", "iso_frac", "usable",
-          "roi_px", "rel_bright", "cv", "frames", "votes", "width",
+          "roi_px", "cx", "cy", "bbox_w", "bbox_h", "bbox_bottom",
+          "rel_bright", "cv", "frames", "votes", "width",
           "height", "source", "reasoning"]
 
 
@@ -95,6 +97,17 @@ BURST = 15
 #   off       0% idle CPU,  96MB, ~4.0s per event, no pre-trigger frames
 #             dial out on each event and pay the 3.1s RTSP handshake.
 BUFFER_MODE = os.getenv("BUFFER_MODE", "segments").lower()
+
+# Sound fired through the camera speaker when the intruder is detected.
+# Must match a file already in HA's config/www/sounds/.
+ORANGE_SOUND = os.getenv("ORANGE_SOUND", "noise_white.wav")
+
+
+def _play_sound(sound):
+    try:
+        play(sound)
+    except Exception as exc:
+        print(f"  sound playback failed ({sound}): {exc}", flush=True)
 
 
 @app.get("/health")
@@ -327,10 +340,17 @@ async def motion(request: Request, image: UploadFile | None = None,
           f"{keep.shape[1]}x{keep.shape[0]}  "
           f"votes={row['votes']}  src={source}", flush=True)
 
+    sound = ORANGE_SOUND if verdict == "orange_cat" else None
+    if sound:
+        print(f"{stamp}  -> playing sound {sound}", flush=True)
+        threading.Thread(target=_play_sound, args=(sound,),
+                         daemon=True, name="orange-sound").start()
+
     return {"ok": True, "camera": camera, "verdict": verdict,
             "confidence": round(confidence, 3), "frames": len(frames),
             "votes": tally, "source": source, "stats": stats,
-            "motion": info, "ir": ir_feat, "reasoning": reasoning}
+            "motion": info, "ir": ir_feat, "reasoning": reasoning,
+            "sound": sound}
 
 
 if __name__ == "__main__":
