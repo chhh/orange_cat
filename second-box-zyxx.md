@@ -4,7 +4,9 @@ Written 2026-08-24, when Dave's laptop had to go to Reed CUS for a fan
 replacement (up to 24 h) and the detector would otherwise have gone dark for a
 night — which per §1 is exactly when the stray comes.
 
-**zyxx** is the older ThinkPad. It was lent to a friend and came back once his
+**zyxx** is the older ThinkPad. Its actual hostname is **`odd-fellow`** and
+the login account is **`david`** (not `davidp` as on the laptop); "zyxx" is a
+name used only in this document. It was lent to a friend and came back once his
 desktop was installed at his apartment, so it is free. Goal: make it the
 permanent home for the detector, so Dave's daily-driver laptop stops being a
 single point of failure for Dima's cat door.
@@ -224,3 +226,43 @@ protected at rest while it is on the repair bench.
 
 Whatever the outcome, Dima should know when detection is down and when it is
 back. A silent gap looks identical to a working system that saw nothing.
+
+
+## What actually happened, 2026-08-25
+
+Executed between 12:10 and 12:57. Downtime was **about four minutes**
+(12:53 server stop -> 12:57 server start on odd-fellow).
+
+Corrections this run forced, beyond the WireGuard ownership fix above:
+
+- **`models/yolov8n.onnx` (13 MB) is gitignored** and was missing from every
+  earlier version of this document. Without it the detector cannot run at all.
+  It is a fourth out-of-band artifact alongside `.env`, the two `bg_*.npy`, and
+  the tunnel config.
+- **Neither machine ran sshd.** The plan assumed a USB shuttle; installing
+  `openssh-server` on odd-fellow and adding the laptop's key turned the whole
+  transfer into `scp` over the LAN and let the laptop drive the setup. Do this
+  first next time -- it is the single biggest time saver here.
+- **The laptop's own `~/.ssh/id_ed25519` is passphrase-protected** and
+  gnome-keyring refused to sign for a non-interactive session
+  (`agent refused operation`). A dedicated passphrase-less key
+  (`~/.ssh/ocp_handover`, comment `ocp-handover-to-zyxx`) was generated for
+  this. **Revoke it when the handover is over**: `rm ~/.ssh/ocp_handover*` on
+  the laptop and drop that line from `~/.ssh/authorized_keys` on odd-fellow.
+- **`git` was not installed** on odd-fellow. Neither was anything else beyond
+  ffmpeg/wireguard-tools.
+- **`sudo` cannot be driven over a non-interactive SSH session.** Every root
+  step has to be a script the human runs at the box's own terminal. Two were
+  used here, `root-setup-1.sh` (git + suspend masking) and `root-setup-2.sh`
+  (tunnel config, units, `wg-quick` start), both staged by `scp` first.
+- **Do not clone from GitHub.** `origin/roi-background-detection` was **13
+  commits behind** local at handover time -- a clone would have missed both
+  commits that caught the cat. A `git bundle create ocp.bundle --all` carried
+  the full history instead.
+
+Pre-flight that proved the detector before it saw a live frame: `samples/labelled`
+(107 MB, gitignored) was copied across and `uv run evaluate.py` returned
+**30/30 on odd-fellow** -- 5/5 orange-intruder, 24/24 our-cats, 1/1 possum, no
+misses and no false alarms, matching the laptop's baseline exactly. Worth
+repeating on any future host: it isolates detector correctness from the tunnel
+and RTSP paths, which are the only things left to fail after it passes.

@@ -17,6 +17,9 @@ mkdir -p "$DEST/frames"
 chmod 700 "$DEST"
 install -m 600 .env "$DEST/.env"
 install -m 644 frames/bg_inside.npy frames/bg_outside.npy "$DEST/frames/"
+# gitignored and REQUIRED -- the detector cannot run without the model
+mkdir -p "$DEST/models"
+install -m 644 models/yolov8n.onnx "$DEST/models/"
 [ -f deterrent-hardware.md ] && install -m 644 deterrent-hardware.md "$DEST/"
 
 # Claude Code context that does not come with the repo clone. NOT ~/.claude.json
