@@ -266,3 +266,51 @@ Pre-flight that proved the detector before it saw a live frame: `samples/labelle
 misses and no false alarms, matching the laptop's baseline exactly. Worth
 repeating on any future host: it isolates detector correctness from the tunnel
 and RTSP paths, which are the only things left to fail after it passes.
+
+## It froze on day one — read this before trusting the box
+
+**2026-08-25 13:07, about an hour after setup, odd-fellow locked up hard.** No
+cursor, no console, off the network (ARP `FAILED`). The journal for that boot
+ends mid-second at 13:07:04 with no panic, no thermal trip, no OOM, no crash
+dump — the signature of a hard lockup, not overheating. Idle temps were 43 °C
+against a 100 °C critical, and a power cycle recovered it immediately.
+
+The only signal that was worsening beforehand:
+
+    acpi_os_execute_deferred hogged CPU for >10000us
+    4 -> 5 -> 7 -> 11 -> 19 -> 35 -> 67 -> 131 (12:28) ... 259 (12:52)
+
+Check it with:
+
+```
+journalctl -b -k | /bin/grep -c "acpi_os_execute_deferred hogged"
+```
+
+A climbing count is the only early warning available. Also note `thermald`
+**cannot run on this platform** ("Unsupported cpu model or platform"), and the
+kernel is `7.0.0-28-generic`, very new for Mint 22.3 — a kernel regression is
+as plausible as anything else here.
+
+### What was added in response (`root-setup-3.sh`)
+
+1. **`ocp-detector.service`** — the detector is a real systemd unit now
+   (`Restart=always`, `User=david`, `Requires=wg-quick@wg0.service`). **It
+   survives reboot.** Every earlier note in this project saying "not a systemd
+   unit, dies on reboot" is stale for this box.
+2. **`wg-quick@wg0` enabled here**, and stopped *and disabled* on the laptop.
+   The hard rule still stands — if the laptop returns to service, disable one
+   before the other comes up.
+3. **Hardware watchdog** — `iTCO_wdt` loaded and persisted in
+   `/etc/modules-load.d/watchdog.conf`, `RuntimeWatchdogSec=60`. systemd
+   confirms `Using hardware watchdog 'iTCO_wdt' ... timeout of 1min`. A hard
+   lockup reboots the box in ~60 s.
+
+A freeze now costs about two minutes instead of a night.
+
+### What is still unprotected
+
+**Nothing outside odd-fellow can tell you it has stopped.** The watchdog covers
+a lockup, but not a wedged detector on a live box. The durable fix is an alert
+on Dima's Home Assistant when its POSTs stop getting a 200 — one alarm covering
+a frozen box, a dead tunnel and a stopped server. It belongs on the list of
+questions for Dima.
