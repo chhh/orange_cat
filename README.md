@@ -27,7 +27,21 @@ entity over HA's REST API — no direct Protect credentials needed.
 uv run talk.py DRILL.WAV
 ```
 
-The arg is a filename that already lives in `config/www/sounds/`.
+The arg is a filename that already lives in `config/www/sounds/`. Filenames
+are case-sensitive (`DRILL.WAV` != `DRILL.wav`).
+
+### Play (curl)
+
+Same call, raw:
+
+```bash
+curl -X POST http://192.168.1.133:8123/api/services/media_player/play_media \
+  -H "Authorization: Bearer $HA_LONG_LIVED_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"entity_id":"media_player.nursery_speaker_2",
+       "media_content_id":"http://192.168.1.133:8123/local/sounds/DRILL.WAV",
+       "media_content_type":"music"}'
+```
 
 ### Louder
 
