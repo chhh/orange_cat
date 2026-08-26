@@ -29,7 +29,14 @@ case "${1:-start}" in
     echo "stopped"
     ;;
   status)
+    echo "health:"
     curl -s --max-time 5 http://127.0.0.1:8080/health || echo "not responding"
+    echo
+    echo "config:"
+    curl -s --max-time 5 http://127.0.0.1:8080/config || echo "(no /config endpoint)"
+    echo
+    echo "events:"
+    curl -s --max-time 5 http://127.0.0.1:8080/events || echo "(no /events endpoint)"
     ;;
   *) echo "usage: $0 [start|stop|status]" >&2; exit 2 ;;
 esac

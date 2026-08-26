@@ -29,6 +29,7 @@ import os
 import random
 import threading
 import time
+from collections import deque
 from datetime import datetime
 
 import cv2
@@ -46,6 +47,9 @@ import config
 
 EVENT_DIR = "frames/events"
 CSV_PATH = "frames/events.csv"
+
+# In-memory tail of motion receipts: what arrived and how it was processed.
+RECENT_EVENTS = deque(maxlen=20)
 
 load_dotenv()
 app = FastAPI()
@@ -198,6 +202,49 @@ def health():
                         else streamer.all_status())}
 
 
+@app.get("/events")
+def recent_events():
+    """Last few motion receipts and their processing status."""
+    return {
+        "recent": list(RECENT_EVENTS),
+        "last_orange_cat": _last_orange_cat(),
+    }
+
+
+def _last_orange_cat():
+    if not os.path.exists(CSV_PATH):
+        return None
+    try:
+        with open(CSV_PATH, newline="") as fh:
+            last = None
+            for row in csv.DictReader(fh):
+                if row.get("verdict") == "orange_cat":
+                    last = row["ts"]
+            return last
+    except OSError:
+        return None
+
+
+@app.get("/config")
+def show_config():
+    """The resolved config the server is running with (no secrets)."""
+    return {
+        "host": config.HOST,
+        "buffer_mode": BUFFER_MODE,
+        "bg_refresh_seconds": BG_REFRESH_SECONDS,
+        "ha": {"host": config.HA_HOST, "speaker": config.HA_SPEAKER,
+               "ssh_host": config.HA_SSH_HOST},
+        "sound": {
+            "sounds": ORANGE_SOUNDS,
+            "near_door_min_bottom": NEAR_DOOR_MIN_BOTTOM,
+            "on_any_motion": SOUND_ON_ANY_MOTION,
+            "min_interval": SOUND_MIN_INTERVAL,
+            "max_interval": SOUND_MAX_INTERVAL,
+            "max_duration": SOUND_MAX_DURATION,
+        },
+    }
+
+
 @app.on_event("startup")
 def _warm_buffers():
     """Start whichever buffer the mode calls for, so events find frames ready."""
@@ -312,6 +359,8 @@ async def motion(request: Request, image: UploadFile | None = None,
     t0 = time.time()
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")[:-3]
     os.makedirs(EVENT_DIR, exist_ok=True)
+    entry = {"ts": stamp, "camera": camera, "status": "received"}
+    RECENT_EVENTS.append(entry)
 
     if image is not None:
         # A posted snapshot is one frame at whatever resolution HA chose --
@@ -384,6 +433,7 @@ async def motion(request: Request, image: UploadFile | None = None,
     if not frames:
         print(f"{stamp}  {camera}: event but no usable frame ({source})",
               flush=True)
+        entry.update(camera=camera, status="no_frame")
         return {"ok": False, "error": "no frame", "camera": camera,
                 "source": source}
 
@@ -416,6 +466,9 @@ async def motion(request: Request, image: UploadFile | None = None,
            **stats, **{k: v for k, v in info.items() if k != "reason"},
            **(ir_feat or {})}
     record(row)
+    entry.update(camera=camera, status="processed", verdict=verdict,
+                 confidence=round(confidence, 3),
+                 motion_frac=info.get("motion_frac"))
 
     mode = "IR " if stats["is_ir"] else "COL"
     print(f"{stamp}  {camera:7s} {mode}  {verdict:18s} "
