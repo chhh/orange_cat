@@ -119,6 +119,7 @@ SOUND_ON_ANY_MOTION = config.SOUND_ON_ANY_MOTION
 # random.uniform(min, max) seconds instead of once per motion event.
 SOUND_MIN_INTERVAL = config.SOUND_MIN_INTERVAL
 SOUND_MAX_INTERVAL = config.SOUND_MAX_INTERVAL
+SOUND_MAX_DURATION = config.SOUND_MAX_DURATION
 
 _deterring = {}  # camera -> threading.Event; set when its deterrent loop stops
 
@@ -144,31 +145,49 @@ def _fresh_frame(camera):
 
 
 def _deter_loop(camera, stop):
-    """Repeatedly play a random sound while the target remains in view."""
-    while not stop.wait(random.uniform(SOUND_MIN_INTERVAL, SOUND_MAX_INTERVAL)):
-        try:
-            frame = _fresh_frame(camera)
-            if frame is None:
-                print(f"  deterrent: no frame, stopping loop ({camera})",
+    """Repeatedly play a random sound while the target remains in view.
+
+    Bounded by SOUND_MAX_DURATION: a stale background model makes an empty
+    scene read as permanently busy, which would otherwise spam forever (seen
+    on 2026-08-25 night test: 15% of the ROI 'moving' with nobody there).
+    """
+    started = time.time()
+    try:
+        while not stop.wait(random.uniform(SOUND_MIN_INTERVAL,
+                                           SOUND_MAX_INTERVAL)):
+            if time.time() - started > SOUND_MAX_DURATION:
+                print(f"  deterrent: max duration reached, stopping ({camera})",
                       flush=True)
                 break
-            verdict, _, _, info, _ = score_frame(frame, camera)
-        except Exception as exc:
-            print(f"  deterrent loop error ({camera}): {exc}", flush=True)
-            break
+            try:
+                frame = _fresh_frame(camera)
+                if frame is None:
+                    print(f"  deterrent: no frame, stopping loop ({camera})",
+                          flush=True)
+                    break
+                verdict, _, _, info, _ = score_frame(frame, camera)
+            except Exception as exc:
+                print(f"  deterrent loop error ({camera}): {exc}", flush=True)
+                break
 
-        if SOUND_ON_ANY_MOTION:
-            present = info.get("motion_frac", 0.0) >= detect.MIN_MOTION_FRACTION
-        else:
-            present = verdict == "orange_cat"
+            if SOUND_ON_ANY_MOTION:
+                present = info.get("motion_frac", 0.0) >= detect.MIN_MOTION_FRACTION
+            else:
+                present = verdict == "orange_cat"
 
-        if not present:
-            print(f"  target left view, stopping deterrent ({camera})", flush=True)
-            break
+            print(f"  deterrent: motion_frac={info.get('motion_frac', 0)} "
+                  f"verdict={verdict} present={present}", flush=True)
 
-        sound = random.choice(ORANGE_SOUNDS)
-        print(f"  deterrent: playing {sound} ({camera})", flush=True)
-        _play_sound(sound)
+            if not present:
+                print(f"  target left view, stopping deterrent ({camera})",
+                      flush=True)
+                break
+
+            sound = random.choice(ORANGE_SOUNDS)
+            print(f"  deterrent: playing {sound} ({camera})", flush=True)
+            _play_sound(sound)
+    finally:
+        stop.set()  # mark finished so the next event starts a fresh loop
 
 
 @app.get("/health")

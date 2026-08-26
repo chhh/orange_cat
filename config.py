@@ -43,3 +43,4 @@ SOUND_ON_ANY_MOTION = str(_get("sound", "on_any_motion", "false")).lower() in \
                       ("1", "true", "yes")
 SOUND_MIN_INTERVAL = float(_get("sound", "min_interval", "2"))
 SOUND_MAX_INTERVAL = float(_get("sound", "max_interval", "3"))
+SOUND_MAX_DURATION = float(_get("sound", "max_duration", "30"))

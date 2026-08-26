@@ -15,6 +15,7 @@ ssh_host = "ha"  # optional ssh alias for listing sounds, only works if you have
 # random pick per trigger; each must exist in HA config/www/sounds/
 sounds = ["Poshel-Otsuda.wav", "Hshh-blublu.wav", "DRILL_boost3.wav"]
 near_door_min_bottom = 0.85 # bbox bottom fraction; 0 = gate off
-on_any_motion = false       # foot-test bypass - set true for testing motion-triggered actions
+on_any_motion = true       # foot-test bypass - set true for testing motion-triggered actions
 min_interval = 2            # repeat window, seconds - while motion still present
 max_interval = 3            #    keeps repeating sounds every [min,max] seconds
+max_duration = 30           # hard stop for the repeat loop, seconds
