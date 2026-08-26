@@ -14,12 +14,16 @@ entity over HA's REST API — no direct Protect credentials needed.
 
 2. Create a long-lived token: HA profile → Security → long-lived access token.
 
-3. In repo `.env` (or export in shell):
+3. Put secrets in `.env` (gitignored):
    ```
    HA_LONG_LIVED_TOKEN=<token>
-   HA_HOST=192.168.1.133          # default
-   HA_SPEAKER=media_player.nursery_speaker_2   # default
+   CAT_VIDEO_KEY_INSIDE=<key>
+   CAT_VIDEO_KEY_OUTSIDE=<key>
    ```
+
+4. Non-secret settings live in `cat-deterrent.toml` (comments allowed):
+   `[server]` host/buffer_mode, `[ha]` host/speaker, `[sound]` everything
+   below.
 
 ### Play
 
@@ -67,16 +71,15 @@ Copy the louder file to `config/www/sounds/`, then play it the same way.
 ## Auto-play on detection
 
 `server.py` fires a sound through the camera speaker on detection. Config
-comes from `.env`:
+comes from `cat-deterrent.toml` (`[sound]` section); secrets stay in `.env`:
 
-```
-# one picked at random per trigger; each must exist in config/www/sounds/
-ORANGE_SOUNDS=noise_white.wav,siren.wav,DRILL_boost3.wav
-# position gate: fire only when animal's bbox bottom >= this fraction of
-# frame height (1.0 = at the door). 0 disables the gate.
-NEAR_DOOR_MIN_BOTTOM=0.85
-# bypass: fire on ANY motion event (foot-testing), ignoring verdict + gate
-SOUND_ON_ANY_MOTION=false
+```toml
+[sound]
+sounds = ["noise_white.wav", "siren.wav"]  # random pick per trigger
+near_door_min_bottom = 0.85  # bbox bottom fraction; 0 = gate off
+on_any_motion = false        # foot-test bypass
+min_interval = 2             # repeat window (s) while target in view
+max_interval = 3
 ```
 
 When it fires, the `/motion` JSON carries `"sound": "<file>"`; the server log

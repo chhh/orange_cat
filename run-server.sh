@@ -15,7 +15,7 @@ case "${1:-start}" in
     if curl -sf --max-time 2 http://127.0.0.1:8080/health >/dev/null 2>&1; then
       echo "already running"; exit 0
     fi
-    setsid nohup uv run server.py >> frames/server.log 2>&1 < /dev/null &
+    nohup uv run server.py >> frames/server.log 2>&1 < /dev/null &
     disown || true
     for _ in $(seq 1 40); do
       curl -sf --max-time 1 http://127.0.0.1:8080/health >/dev/null 2>&1 && break

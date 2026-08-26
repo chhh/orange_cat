@@ -18,6 +18,7 @@ import numpy as np
 from dotenv import load_dotenv
 
 import detect
+import config
 
 CAMERAS = ("inside", "outside")
 FRAME_DIR = "frames"
@@ -31,7 +32,7 @@ def stream_url(camera="outside"):
     key = os.getenv(var)
     if not key:
         raise RuntimeError(f"Env var {var} not set. Add it to .env (gitignored).")
-    host = os.getenv("CAT_HOST", "192.168.1.1")
+    host = config.HOST
     return f"rtsp://{host}:7447/{key}?enableSrtp"
 
 

@@ -23,9 +23,11 @@ import subprocess
 import sys
 import urllib.request
 
+import config
+
 
 def list_sounds():
-    host = os.getenv("HA_SSH_HOST", "ha")
+    host = config.HA_SSH_HOST
     try:
         out = subprocess.run(
             ["ssh", host, "ls", "/config/www/sounds"],
@@ -49,8 +51,8 @@ def play(name, token=None, host=None, speaker=None):
     token = token or os.getenv("HA_LONG_LIVED_TOKEN")
     if not token:
         raise RuntimeError("HA_LONG_LIVED_TOKEN not set")
-    host = host or os.getenv("HA_HOST", "192.168.1.133")
-    speaker = speaker or os.getenv("HA_SPEAKER", "media_player.nursery_speaker_2")
+    host = host or config.HA_HOST
+    speaker = speaker or config.HA_SPEAKER
 
     name = os.path.basename(name)
     payload = {

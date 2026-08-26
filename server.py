@@ -28,6 +28,7 @@ import csv
 import os
 import random
 import threading
+import time
 from datetime import datetime
 
 import cv2
@@ -41,6 +42,7 @@ import segments
 import streamer
 from capture import CAMERAS, grab, grab_burst, measure, stream_url
 from talk import play
+import config
 
 EVENT_DIR = "frames/events"
 CSV_PATH = "frames/events.csv"
@@ -97,36 +99,81 @@ BURST = 15
 #             decompresses video nobody looks at.
 #   off       0% idle CPU,  96MB, ~4.0s per event, no pre-trigger frames
 #             dial out on each event and pay the 3.1s RTSP handshake.
-BUFFER_MODE = os.getenv("BUFFER_MODE", "segments").lower()
+BUFFER_MODE = config.BUFFER_MODE
 
-# --- Sound playback config (all from .env) --------------------------------
+# --- Sound playback config (cat-deterrent.toml) ---------------------------
 # Comma-separated list; one is picked at random per trigger. Each must exist
 # in HA's config/www/sounds/.
-ORANGE_SOUNDS = [s.strip() for s in
-                 os.getenv("ORANGE_SOUNDS", "noise_white.wav").split(",")
-                 if s.strip()]
+ORANGE_SOUNDS = config.ORANGE_SOUNDS
 
 # Position gate: only fire once the animal's bbox bottom is at least this
 # fraction of frame height (1.0 = touching the bottom edge, at the door).
 # 0 disables the gate entirely.
-NEAR_DOOR_MIN_BOTTOM = float(os.getenv("NEAR_DOOR_MIN_BOTTOM", "0.85"))
+NEAR_DOOR_MIN_BOTTOM = config.NEAR_DOOR_MIN_BOTTOM
 
 # Bypass: fire the sound on ANY motion event with frames, whatever the
 # verdict -- for testing with your own feet.
-SOUND_ON_ANY_MOTION = os.getenv("SOUND_ON_ANY_MOTION", "false").lower() in \
-                      ("1", "true", "yes")
+SOUND_ON_ANY_MOTION = config.SOUND_ON_ANY_MOTION
+
+# While the target stays in view, keep firing a random sound every
+# random.uniform(min, max) seconds instead of once per motion event.
+SOUND_MIN_INTERVAL = config.SOUND_MIN_INTERVAL
+SOUND_MAX_INTERVAL = config.SOUND_MAX_INTERVAL
+
+_deterring = {}  # camera -> threading.Event; set when its deterrent loop stops
 
 
 def _play_sound(sound):
+    t = time.time()
     try:
         play(sound)
+        print(f"  play_media roundtrip {1000 * (time.time() - t):.0f} ms "
+              f"({sound})", flush=True)
     except Exception as exc:
         print(f"  sound playback failed ({sound}): {exc}", flush=True)
 
 
+def _fresh_frame(camera):
+    url = stream_url(camera)
+    if BUFFER_MODE == "segments":
+        return segments.get(camera, url).latest_frame()
+    if BUFFER_MODE == "decoded":
+        snap = streamer.get(camera, url).snapshot(1)
+        return snap[0] if snap else None
+    return grab(url)
+
+
+def _deter_loop(camera, stop):
+    """Repeatedly play a random sound while the target remains in view."""
+    while not stop.wait(random.uniform(SOUND_MIN_INTERVAL, SOUND_MAX_INTERVAL)):
+        try:
+            frame = _fresh_frame(camera)
+            if frame is None:
+                print(f"  deterrent: no frame, stopping loop ({camera})",
+                      flush=True)
+                break
+            verdict, _, _, info, _ = score_frame(frame, camera)
+        except Exception as exc:
+            print(f"  deterrent loop error ({camera}): {exc}", flush=True)
+            break
+
+        if SOUND_ON_ANY_MOTION:
+            present = info.get("motion_frac", 0.0) >= detect.MIN_MOTION_FRACTION
+        else:
+            present = verdict == "orange_cat"
+
+        if not present:
+            print(f"  target left view, stopping deterrent ({camera})", flush=True)
+            break
+
+        sound = random.choice(ORANGE_SOUNDS)
+        print(f"  deterrent: playing {sound} ({camera})", flush=True)
+        _play_sound(sound)
+
+
 @app.get("/health")
 def health():
-    return {"ok": True, "host": os.getenv("CAT_HOST", "192.168.1.1"),
+    return {"ok": True, "host": config.HOST,
             "cameras": list(CAMERAS), "buffer_mode": BUFFER_MODE,
             "buffers": (segments.all_status() if BUFFER_MODE == "segments"
                         else streamer.all_status())}
@@ -150,7 +197,7 @@ def _warm_buffers():
 # Without the ring buffer nothing else feeds the background model, and a stale
 # model scores every event against yesterday's light. One frame per camera
 # every few minutes is enough and costs almost nothing.
-BG_REFRESH_SECONDS = int(os.getenv("BG_REFRESH_SECONDS", "300"))
+BG_REFRESH_SECONDS = config.BG_REFRESH_SECONDS
 _stop_refresh = threading.Event()
 
 
@@ -217,6 +264,8 @@ def _start_refresh():
 @app.on_event("shutdown")
 def _close_buffers():
     _stop_refresh.set()
+    for ev in _deterring.values():
+        ev.set()
     streamer.stop_all()
     segments.stop_all()
 
@@ -241,6 +290,7 @@ def score_frame(frame, camera):
 @app.post("/motion")
 async def motion(request: Request, image: UploadFile | None = None,
                  camera: str = Form("outside")):
+    t0 = time.time()
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")[:-3]
     os.makedirs(EVENT_DIR, exist_ok=True)
 
@@ -363,16 +413,24 @@ async def motion(request: Request, image: UploadFile | None = None,
         why = "orange_cat near door" if fire else ""
 
     sound = random.choice(ORANGE_SOUNDS) if fire else None
+    sound_lat_ms = (time.time() - t0) * 1000
     if sound:
-        print(f"{stamp}  -> playing {sound} ({why})", flush=True)
+        print(f"{stamp}  -> playing {sound} ({why})  "
+              f"[req->fire {sound_lat_ms:.0f} ms]", flush=True)
         threading.Thread(target=_play_sound, args=(sound,),
                          daemon=True, name="orange-sound").start()
+        running = _deterring.get(camera)
+        if running is None or running.is_set():
+            stop = threading.Event()
+            _deterring[camera] = stop
+            threading.Thread(target=_deter_loop, args=(camera, stop),
+                             daemon=True, name=f"deter-{camera}").start()
 
     return {"ok": True, "camera": camera, "verdict": verdict,
             "confidence": round(confidence, 3), "frames": len(frames),
             "votes": tally, "source": source, "stats": stats,
             "motion": info, "ir": ir_feat, "reasoning": reasoning,
-            "sound": sound}
+            "sound": sound, "sound_latency_ms": round(sound_lat_ms, 1)}
 
 
 if __name__ == "__main__":
