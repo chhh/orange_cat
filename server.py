@@ -267,7 +267,21 @@ def _refresh_backgrounds():
                           f"({info['motion_frac'] * 100:.1f}% motion) -- "
                           f"treating the model as stale and relearning",
                           flush=True)
-                    detect.update_background(cam, frame)
+                    # alpha=1.0 here too -- this is the branch the comment
+                    # above is actually about. Until 2026-08-25 this call
+                    # used the default BG_ALPHA=0.05, so a model already
+                    # declared WRONG was blended 5% toward reality and stayed
+                    # wrong; the guard then re-fired every 20 minutes forever,
+                    # which is exactly the 2026-08-18 pathology the comment
+                    # describes. Measured live on odd-fellow at 13:58: one
+                    # minute after a "relearn" the outside model still
+                    # disagreed with the scene over 3.16% of the ROI (8242 px,
+                    # tracing a doormat under moved sun, no animal present);
+                    # replacing instead of blending scored 0.0000 / 0 px. The
+                    # quiet branch can never rescue it because 3.16% is 15x
+                    # the 0.002 quiet threshold. Safe because BG_STALE_AFTER=4
+                    # is 20 minutes of sustained busy and visits run 9-11 min.
+                    detect.update_background(cam, frame, alpha=1.0)
                     _busy_streak[cam] = 0
                 else:
                     _busy_streak[cam] = streak + 1

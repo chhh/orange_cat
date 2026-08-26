@@ -193,7 +193,13 @@ record and it does come with the clone.
    sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
    ```
    Also set "When the lid is closed: do nothing" in Mint's Power Management.
-6. **Start it.** `./run-server.sh start`, then `./run-server.sh status`.
+6. **Start it.** On odd-fellow the detector is a systemd unit as of
+   2026-08-25 (see "It froze on day one" below), so use
+   `sudo systemctl start ocp-detector`, then `./run-server.sh status`
+   for the health read. **Do not use `./run-server.sh start` there** --
+   it knows nothing about the unit and will launch a second, competing
+   server against the same buffers and the same port. `start` is still
+   the right command on a host that has no unit installed.
 
 ## Validation — do not skip
 

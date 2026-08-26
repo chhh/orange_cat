@@ -320,8 +320,15 @@ Running `capture.py` for a while first avoids that.
 
 For anything long-running use `./run-server.sh start`, which `setsid`s the
 process into its own session so it outlives the terminal or agent session that
-launched it (logs to `frames/server.log`). A systemd unit would be better still.
+launched it (logs to `frames/server.log`).
 The RTSP handles are reconnected by the recorder threads on failure.
+
+**On odd-fellow this is no longer how the server is started.** Since
+2026-08-25 it runs as `ocp-detector.service` (`Restart=always`, survives
+reboot, appends to the same `frames/server.log`). Use
+`systemctl start|stop|restart ocp-detector` there; `./run-server.sh start`
+would add a second server competing for port 8080 and the same segment
+buffers. `./run-server.sh status` is still fine -- it only reads `/health`.
 
 ## 6. Setting up Home Assistant
 
