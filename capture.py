@@ -108,8 +108,9 @@ def measure(img, mask=None):
     stack = np.stack([b, g, r])
     rgb_spread = float(np.mean(stack.max(axis=0) - stack.min(axis=0)))
 
-    # Warm + saturated: the orange-cat signal. Hue wraps, so both ends.
-    warm = ((h <= 22) | (h >= 170)) & (s > 90) & (v > 50)
+    # Warm + saturated: the orange-cat signal. Shared with the surround
+    # comparison in detect, so the two cannot drift apart.
+    warm = detect.warm_mask(img)
 
     if mask is None:
         sel = np.ones(img.shape[:2], dtype=bool)

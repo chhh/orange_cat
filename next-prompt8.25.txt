@@ -1,0 +1,71 @@
+You are running on odd-fellow, the second ThinkPad, which took over the orange-cat
+detector from Dave's laptop at 12:57 on 2026-08-25 while that laptop is at Reed CUS
+for a fan replacement. Read /home/david/ocp-watch/REARM.md end to end first, then
+AGENTS.md. Your project memory is authoritative here -- the laptop's copy is stale
+and must never be merged back.
+
+FIRST, ESTABLISH WHERE THINGS STAND. A firmware update (BIOS 0.1.6 -> 0.1.42,
+Embedded Controller 0.1.4 -> 0.1.15, Intel ME) was run on the evening of 08-25 to
+try to stop the hard lockups. Compare against /home/david/ocp-watch/PRE-FIRMWARE-
+BASELINE.md and tell me plainly whether it worked:
+
+    uname -r; cat /sys/class/dmi/id/bios_version
+    journalctl -b -k | /bin/grep -c "acpi_os_execute_deferred hogged"
+    cat /sys/class/power_supply/AC/online          # 1 = mains, MUST be 1
+    systemctl is-active ocp-detector wg-quick@wg0
+    ps -eo pid,args | /bin/grep "[p]atrol.py"      # bracket form, see below
+
+The box froze hard TWICE on 08-25, at 13:07 and 19:17, needing a manual power
+cycle both times. Cause traced to the Embedded Controller: gpe16 was 3251 of 3283
+ACPI events, and each one queues an AML evaluation onto acpi_os_execute_deferred.
+Confirmed triggers are sustained CPU load and AC transitions -- the second freeze
+came four minutes after mains was unplugged. Judge that counter by RATE, not value:
+4->19 in five seconds preceded a lockup, 4->19 in 36 minutes did not. If it is
+still climbing on updated firmware, boot 6.14.0-37 from GRUB (hold Shift or tap Esc,
+the menu is hidden) to test the kernel half -- 7.0.0-28 is very new for Mint 22.3.
+
+THE HARDWARE WATCHDOG IS NOT ARMED. /etc/modules-load.d/watchdog.conf names
+iTCO_wdt but the module is not loaded and /dev/watchdog is absent, so a freeze
+waits for a human. It worked on an earlier boot. Needs root: check why, and
+sudo modprobe iTCO_wdt. Until then every note claiming "a freeze costs two
+minutes" is false.
+
+MOST IMPORTANT UNFINISHED ITEM: Home Assistant stopped delivering at 17:18 on
+08-25 and had not resumed. Dima's automation fires correctly -- verified through
+his API token, now in .env as HA_LONG_LIVED_TOKEN -- but its actions fail:
+camera.snapshot has not written /config/www/cat_snap_outside.jpg since 17:34:44,
+so it never reaches the shell_command that posts to us. A message asking him to
+open the automation's Trace is written and ready at /home/david/ocp-watch/
+ASK-DIMA.md. Check whether it was sent and whether POSTs have resumed
+(/bin/grep -c "POST /motion" frames/server.log). Until it is fixed the detector
+receives nothing and the independent patrol is the only detection.
+
+Then re-arm the five watches per REARM.md and SELF-TEST each with a labelled fake
+line. Three traps that cost me real time on 08-25: use /bin/grep not grep (ugrep
+shim); `grep -c` prints 0 AND exits 1, so `|| echo 0` yields "0\n0" and breaks
+numeric comparisons -- use ${n:-0}; and never check for the patrol with
+`pgrep -f patrol.py`, which matches the shell running the check and reports a
+false ALIVE (use the bracket form above). The patrol never survives a reboot --
+restart it, and consider the @reboot crontab line in REARM.md.
+
+WHAT WENT RIGHT on 08-25, so you do not re-derive it: the chain was proven end to
+end at 15:35; a tuxedo resident was correctly rejected three times; and at 18:47
+the orange stray was caught on BOTH feature paths minutes apart -- colour outside
+(70.1% warm, 43.6pp margin) and IR inside (rel_bright 1.48, first live validation
+of the IR discriminator on an animal it was not calibrated on). Frames are in
+/home/david/ocp-watch/event-1847/. That visit lasted under three minutes, not the
+documented 9-11, so do not design the deterrent around ten minutes of dwell time.
+A background-model bug was also fixed: alpha=1.0 was on the quiet branch instead
+of the stale branch, so "relearns" moved the model only 5% and re-fired every 20
+minutes forever. Rollback at /home/david/ocp-watch/server.py.before-alpha-fix.bak.
+
+BEWARE ONE THING at dawn and dusk: the detector path never consults bg_corr, so
+low sun on the grey siding scored 89.7% ginger on an EMPTY patio at 19:37. ALWAYS
+look at the frame before telling me the cat is here. The patrol now labels weak
+hits as LOW-CONFIDENCE, but that threshold is fitted to three points.
+
+Open work is in the next-steps memory: person false positives still need field
+confirmation, visit pooling is the blocker for deterrent hardware, and Dima now
+has the camera speaker working which opens the Phase 0 "would have sprayed" dry
+run. We are NOT going live for a while, so nothing here is urgent -- prioritise
+getting the box stable and the HA delivery fixed over new detector work.

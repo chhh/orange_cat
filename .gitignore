@@ -27,3 +27,9 @@ ocp-segments/
 .vscode/
 *.swp
 .DS_Store
+
+# detector weights (13MB, regenerate: see AGENTS.md)
+models/
+
+# labelled clip sets pulled off Protect (214MB); see AGENTS.md §8
+ooo/

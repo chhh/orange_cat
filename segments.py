@@ -178,6 +178,18 @@ class SegmentRecorder:
         step = len(out) / count
         return [out[min(int(i * step), len(out) - 1)] for i in range(count)]
 
+    def age(self):
+        """Seconds since the newest complete segment was written.
+
+        None when there is nothing to report. This is how a caller tells
+        "the buffer is warm" from "the buffer is full of last minute's
+        video" -- see the staleness guard in server.py, and the note there
+        about why the two are not the same thing.
+        """
+        segs = self._segments()
+        newest = max((os.path.getmtime(s) for s in segs), default=None)
+        return None if newest is None else time.time() - newest
+
     def latest_frame(self):
         """One recent frame, for background refresh. Cheap: no new connection."""
         segs = self._segments()

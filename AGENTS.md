@@ -35,7 +35,13 @@ Two consequences of the deterrence goal that are easy to get backwards:
 That colour split is the whole basis of the classifier:
 
 - **Daylight (colour mode)**: fraction of *moving* pixels that are warm and
-  saturated (`warm_pct`). Threshold 8 %.
+  saturated (`warm_pct`, threshold 8 %) **and** `warm_margin` — the same
+  measurement on the animal minus the same measurement on the ring of scene
+  immediately around it, threshold 5 pp. Both must pass. `warm_pct` alone
+  cannot work: at sunrise the light reddens a black-and-white cat to 10–23 %,
+  which overlaps the intruder's own range (25.7 % at its lowest). Against the
+  local surround the two separate cleanly — intruders 8.3–48.9 pp, every
+  resident and the possum ≤ 2.5 pp.
 - **Night (IR mode)**: colour is completely absent (`warm_pct` is 0.00 on every
   night clip). What works is `rel_bright` — mean luminance of the animal divided
   by the mean luminance of the background it stands in front of. Ginger fur
@@ -86,6 +92,27 @@ motion mask:
 
 The 8 % threshold separates these cleanly outside the dawn window. This is the
 first validation on data the thresholds were *not* fitted to.
+
+**Superseded on 2026-08-17** — `uv run evaluate.py` replays all 30 clips
+through the live code and now scores **30/30, no misses and no false alarms**
+(it was 28/30, the two dawn clips being the failures). See §9.
+
+**First live night, 2026-08-17/18.** 44 overnight events, **no false
+positives**. Dima confirms the stray did not visit, so this validates
+*precision only* — the new code has still never seen the intruder, and recall
+is untested live. Two results worth keeping:
+
+- The dawn false positive reproduced and was **correctly rejected**: 05:56–06:10
+  scored `warm` 48–61 % with a surround margin of 27–47 pp on frames containing
+  no animal (verified by eye — sunrise on the tan planter). `warm_margin` sailed
+  straight past it; **only `bg_corr` caught it**. The two dawn failure modes are
+  different mechanisms and need different features — see the comment on
+  `WARM_MARGIN_THRESHOLD`.
+- For 8.5 hours the detector reported *zero* motion pixels, which looks broken
+  and is not. Frame-wide 5 000–10 000 px were changing while **0–3** fell inside
+  the ROI: wind in the bamboo and the doorway, both outside the crop. Protect
+  triggers on them; the ROI correctly ignores them. Before debugging a silent
+  night, check where the changed pixels are, not how many.
 
 A subtlety that cost time: the ginger test needs `S > 90`, and the outside
 scene's *background* saturation ceiling at night is only 60–70 — which looks
@@ -195,20 +222,38 @@ abstain.
   making all 19 real events uninformative. Everything looks healthy while this
   happens. Fixed by relearning after `BG_STALE_AFTER` consecutive busy checks;
   if verdicts look strange, check `motion_px` for a suspiciously constant value.
-- **`detect.ROI` is obsolete and now harmful.** It was chosen when whole frames
-  were scored, to exclude the 24 %-warm wooden gate. Scoring is now restricted
-  to *motion* pixels, so static warm objects cannot contribute anyway — and the
-  crop (`x < 0.63`) hides cats on the right-hand side of the frame entirely.
-  Widening it to roughly `y > 0.30` recovered 4 previously unscorable clips and
-  lost nothing. Not yet changed in the code.
-- **Moving sunlight at dawn reads as a ginger cat.** For ~20 minutes a patch of
-  warm sun sweeps across the tan planter; it counts as motion and as ginger,
-  and produced 88.9 % on a frame containing **no animal at all**. Shadow
-  suppression does not help (that catches darkening; this is brightening) and
-  nor does chromaticity (warm light genuinely reddens a tan pot). Candidate
-  fixes: a much shorter background window, or an object detector used as a
-  "is it even an animal" gate. Interim option: return `unmeasurable` during
-  rapid light change rather than guessing.
+- **`detect.ROI`: widen in `y`, never in `x`.** `y > 0.45` → `y > 0.30` is
+  free and recovers animals further from the lens. Removing the `x < 0.63`
+  edge looks equally justified — it was picked to exclude the 24 %-warm gate
+  back when whole frames were scored, and only motion pixels are scored now —
+  and it is **wrong**. The strip `x = 0.63…0.80` is the open doorway: sunlit
+  yard, a gate that swings, and the path people walk. Replaying a day of live
+  events took false ginger verdicts from **1 to 11** when the ROI opened to
+  `x < 0.80`, one of them a person in brown boots. The labelled clips score
+  30/30 at *every* ROI tried, so they cannot see this — it is a live-log
+  result only, and the earlier "lost nothing" note came from the clips alone.
+- **Moving sunlight reads as a ginger cat — and it is not only a dawn
+  problem.** On 2026-08-17 the live detector returned `orange_cat` **twelve
+  times between 11:49 and 13:05** on a patio with no animal on it, at 0.73–1.0
+  confidence. Two causes, both now fixed:
+  1. The isolation window (`ISO_MIN`/`ISO_MAX`) was applied on the IR path
+     only, so in colour mode a 1 500 px scrap of sunlight was scored as if it
+     were an animal. It now gates both paths.
+  2. The old ROI's own right edge sliced through the sunlit doorway,
+     manufacturing exactly such a scrap — eleven of the twelve blobs sat at
+     `x = 0.60…0.63`, pinned against the crop boundary. If verdicts look
+     strange, plot where the blob is; a blob that hugs an ROI edge is an
+     artefact of the crop, not a thing in the world.
+- **`bg_corr` answers "is it an object at all?"** Sunlight does not replace
+  the scene, it rescales it, so frame and background stay correlated across
+  the moving pixels (measured 0.84–0.98). An animal occludes the scene and the
+  correlation collapses (−0.03…0.35 across all 30 labelled clips). Threshold
+  0.70; above it the frame abstains. This is *not* another of the failed
+  contrast features — those measured the animal against itself, which
+  normalises the signal away; this measures it against the scene behind it.
+  Expect it to fire for a few minutes after a restart, when the model is
+  genuinely stale — that is correct behaviour, and safer than the old failure,
+  which was to score confidently against a stale model.
 - **A small COCO detector (NanoDet) is poor on IR close-ups** — 0–13 % hit rate
   on the indoor night clips, but **87 %** on the one clip with a well-framed
   cat at a distance. It fails on exactly the frames background subtraction also
@@ -275,8 +320,15 @@ Running `capture.py` for a while first avoids that.
 
 For anything long-running use `./run-server.sh start`, which `setsid`s the
 process into its own session so it outlives the terminal or agent session that
-launched it (logs to `frames/server.log`). A systemd unit would be better still.
+launched it (logs to `frames/server.log`).
 The RTSP handles are reconnected by the recorder threads on failure.
+
+**On odd-fellow this is no longer how the server is started.** Since
+2026-08-25 it runs as `ocp-detector.service` (`Restart=always`, survives
+reboot, appends to the same `frames/server.log`). Use
+`systemctl start|stop|restart ocp-detector` there; `./run-server.sh start`
+would add a second server competing for port 8080 and the same segment
+buffers. `./run-server.sh status` is still fine -- it only reads `/health`.
 
 ## 6. Setting up Home Assistant
 
@@ -344,6 +396,26 @@ HA already exists (Pi at `192.168.1.133`, at Dima's). To recreate or extend it:
 
 Debugging: HA → Settings → System → Logs for `rest_command` errors;
 `frames/events.csv` and the server's stdout on the detector side.
+
+## 6b. Notification classes (added 2026-08-19 at Dima's request)
+
+`/motion` returns a `class` field so Home Assistant does not need to know our
+verdict vocabulary or which verdicts are decisive:
+
+| class | headline | meaning |
+|---|---|---|
+| `intruder` | Orange cat at the door | `orange_cat` at ≥ 0.6 confidence |
+| `not_orange` | An animal, not the orange cat | `no_orange` at ≥ 0.6 confidence |
+| `unsure` | An animal, but could not tell which | something was there; frames disagreed or could not be scored |
+| `none` | Nothing seen | no animal detected in any frame |
+
+**`not_orange` is not "a resident".** Nothing here identifies Dima's cats
+positively — the class also covers the possum and the skunks. Do not word a
+notification as if it did.
+
+The `unsure` class earns its place immediately: the 04:47:37 raid, a 1–1 split
+on two detections, reports `unsure` instead of a confidently wrong
+`not_orange`.
 
 ## 7. Notifying several people instead of one
 
@@ -416,3 +488,112 @@ event image is possible if HA can fetch it — e.g. serve `frames/events/` via
 Conventions: plain scripts, run with `uv run`; comments explain *why* a number
 is what it is, with the measurement that produced it — keep doing that when you
 change a threshold.
+
+### Detector-first front end (2026-08-19) — current design
+
+The motion-mask front end was replaced. It failed on three of three confirmed
+raids, and its failures were structural rather than tuning: it needs a
+background model that tracks the light, an ROI narrow enough to exclude the
+gate, and an animal big enough in frame. `animal.py` runs a YOLOv8n ONNX
+export under `cv2.dnn` and needs none of those.
+
+Measured over 5 labelled intruder clips, 24 resident clips, the possum, 3
+confirmed live raids, and the 14 known daytime false positives:
+
+| | old motion path | detector path |
+|---|---|---|
+| labelled clips | 30/30 | 30/30 |
+| confirmed live raids | **0/3** | **2/3** |
+| sunlight false positives | 12 fired | **0 detected** |
+| person false positives | 2 fired | **0** (person class excluded) |
+
+Colour is scored inside the box at `SAT_MIN_BOX = 40`, not the mask's 90 — a
+box is nearly all animal where a mask was half wall, so the floor can be low
+enough to survive dim light at range. The discriminator is the **margin** over
+the surrounding band, not absolute warmth: intruder 30.1–54.7 pp against every
+resident ≤ 14.7 pp, while warm % alone overlaps (a resident at sunrise hit
+30.4 % against the intruder's 30.7 % floor).
+
+Two things to know before touching it:
+
+- **A frame with no detection ABSTAINS, it does not vote "not orange".** The
+  detector fired on as few as 1 of 15 frames on a real raid, so counting
+  no-detection frames as absence would drown every true positive.
+- **Species labels are worthless** — one burst returned cat, then dog, then
+  cow for the same animal. The box is the signal; colour does the ID.
+
+The remaining miss is 04:47:37, a 1–1 split on only 2 detections. It is the
+same visit as 04:57:11, which fires at confidence 1.00, so the raid is still
+caught. Not worth tuning to a single event.
+
+The model is gitignored. Regenerate with:
+`pip install ultralytics && yolo export model=yolov8n.pt format=onnx imgsz=640 opset=12`
+then put `yolov8n.onnx` in `models/`. Validate with `uv run evaluate_detector.py`.
+Set `USE_DETECTOR=0` to fall back to the motion path.
+
+### Night of 2026-08-18/19 — the intruder was seen and missed
+
+Plumbing was clean all night (buffers fresh, 0 recorder restarts, background
+current, no stale-buffer fallbacks), so the 2026-08-17 buffer fix held. 16
+events, no false positives, and **the orange tabby appeared at 04:57:11 and
+was logged `no_animal`, motion_px 0.**
+
+Replaying its 15 saved burst frames shows **three** gates, each of which
+blocks it on its own — so fixing any one of them changes nothing:
+
+| Gate | Value | Threshold |
+|---|---|---|
+| ROI `x < 0.63` | cat at x≈0.72–0.83 | cropped out entirely |
+| `ISO_MIN` | `iso = 0.0103` | 0.015 → 11/15 frames `unmeasurable` |
+| colour test | `warm_pct` 3.9 %, margin 3.47 pp | 8 % / 5 pp → votes `no_orange` 7–3 |
+
+The third is the deep one and it is new information: **at night and at
+distance the ginger signal itself collapses.** The `S > 90` term in
+`warm_mask` is what fails — dim light at range desaturates the fur. §2's note
+that "the cat itself reaches satP99 = 136" was measured on a *near* animal
+under the patio light; it does not hold across the patio. Any fix has to
+address all three together, and the colour threshold cannot simply be lowered
+without re-running §9 against the false positives it was raised to stop.
+
+## 9. Validating a threshold change (`evaluate.py`)
+
+`uv run evaluate.py` replays Dima's 30 hand-sorted clips through the *live*
+functions — `motion_mask`, `measure`, `classify`, `vote` — and prints a
+per-clip verdict plus a confusion summary. Run it before and after touching
+anything in `detect.py`. Current state: **30/30, no misses, no false alarms**.
+
+```
+uv run evaluate.py                              # the current thresholds
+uv run evaluate.py --set WARM_PCT_THRESHOLD=8   # override one constant
+uv run evaluate.py --roi 0,0.45,0.63,1          # try a different crop
+```
+
+Use `--set` for **ablations**, one change switched off at a time. A change set
+that scores 30/30 tells you nothing about which edit earned it; on 2026-08-17
+ablation showed that of four changes only `warm_margin` moved the clip score
+at all, and that the ROI change was silently *costing* precision in a way the
+clips could not show.
+
+Two traps, both of which produced confidently wrong numbers before being
+caught:
+
+- **Never use a clip's own median as its background.** A 10 s export of a cat
+  near the door is a cat in most frames, so the median contains the cat, and
+  the animal then measures at a fraction of its true size — a confirmed
+  intruder scored `iso 0.003`, indistinguishable from a sunlit scrap. The
+  harness pools backgrounds from neighbouring clips instead
+  (`pooled_backgrounds`). This one artefact changed clip verdicts and
+  confidences across the board (one clip went 0.71 → 1.00).
+- **The clips cannot see false positives that happen when no animal is
+  present.** They were exported *around* animals, so sunlight-on-empty-patio
+  and people-walking-past do not appear in them at all. That failure mode
+  lives only in `frames/events.csv` and `frames/events/*.jpg`. To test against
+  it, rebuild each event's background from the median of neighbouring events
+  in time (±40 min) — scoring a midday frame against tonight's model reports
+  blobs ten times too big and is worthless.
+
+Known remaining weakness: **a person wearing red or orange inside the ROI can
+score `orange_cat`.** There is no notion of shape or species anywhere in the
+pipeline. It needs a burst of frames to agree, so it is not frequent, but it
+is the most likely false positive now that the sunlight ones are gone, and it
+is the thing to fix before any deterrent is armed.

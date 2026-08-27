@@ -24,13 +24,13 @@ comment on that constant below, and segments.py for the default.
 Run:  uv run server.py            (listens on 0.0.0.0:8080)
 """
 
-import csv
 import asyncio
+import collections
+import csv
 import os
 import random
 import threading
 import time
-from collections import deque
 from datetime import datetime
 
 import cv2
@@ -39,6 +39,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Form, Request, UploadFile
 import uvicorn
 
+import animal
 import detect
 import segments
 import streamer
@@ -50,16 +51,17 @@ EVENT_DIR = "frames/events"
 CSV_PATH = "frames/events.csv"
 
 # In-memory tail of motion receipts: what arrived and how it was processed.
-RECENT_EVENTS = deque(maxlen=20)
+RECENT_EVENTS = collections.deque(maxlen=20)
 
 load_dotenv()
 app = FastAPI()
 
 
-FIELDS = ["ts", "camera", "file", "verdict", "confidence", "brightness",
+FIELDS = ["ts", "camera", "file", "verdict", "class", "confidence", "brightness",
           "saturation", "rgb_spread", "is_ir", "warm_pct", "luma_std",
           "px", "motion_px", "motion_frac", "iso_frac", "usable",
           "roi_px", "cx", "cy", "bbox_w", "bbox_h", "bbox_bottom",
+          "bg_corr", "warm_margin", "det_conf", "box_frac",
           "rel_bright", "cv", "frames", "votes", "width",
           "height", "source", "reasoning"]
 
@@ -91,6 +93,28 @@ def record(row):
             writer.writeheader()
         writer.writerow(row)
 
+
+# Keep every frame that was scored, not just the winner, under
+# frames/events/<camera>-<stamp>/NN.jpg.
+#
+# Added 2026-08-18 at Dima's request, and it immediately earned itself: the
+# single "best" frame the server kept was hiding the fact that the buffer was
+# serving footage a minute stale. One frame per event cannot show that; the
+# burst can. Costs ~1.5 MB per event, so it is opt-out.
+SAVE_BURST = os.getenv("SAVE_BURST", "1") not in ("0", "false", "no")
+
+# A warm buffer is not the same thing as a CURRENT buffer, and conflating the
+# two cost a whole night of detections on 2026-08-17/18. The ffmpeg recorder
+# restarted 40 times over the VPN that night; after a restart the rolling
+# window refills from wherever the stream resumes, and events were being
+# scored against footage ~70 s old. Ten animals -- cats and two skunks,
+# confirmed by Dima against Protect's own clips -- were each scored as an
+# empty patio, because by the time we looked at the "buffered" frames the
+# animal had not arrived in them yet.
+#
+# So: if the newest complete segment is older than this, the buffer is not
+# describing now. Dial out for fresh frames instead and pay the ~4 s.
+MAX_BUFFER_AGE = float(os.getenv("MAX_BUFFER_AGE", "20"))
 
 BURST = 15
 
@@ -194,13 +218,72 @@ def _deter_loop(camera, stop):
     finally:
         stop.set()  # mark finished so the next event starts a fresh loop
 
+# Seconds to wait after a trigger before reading the segment buffer.
+#
+# The buffer only ever hands us PRE-trigger footage. `segments._segments()`
+# drops the file ffmpeg is still writing (a partial mp4 has no index), and
+# although SEGMENT_SECONDS is 2, `-c copy` can only cut on keyframes -- the
+# camera's GOP makes real segments ~5s. So the newest frame we can decode is
+# up to a whole segment old, and measured bursts ended 3-7s BEFORE the event:
+#
+#     event            fired      burst covered        gap
+#     2026-08-21 04:19 04:19:36   04:19:22 - 04:19:31  5s
+#     2026-08-21 04:31 04:31:10   04:30:59 - 04:31:03  7s
+#
+# Both were the orange cat arriving AT the trigger, into footage we never
+# fetched. Waiting here lets the segment containing the trigger complete.
+#
+# Default 0 keeps today's behaviour, because this trades latency for
+# coverage and that choice belongs to whoever arms the deterrent: per-event
+# latency is currently 0.28-0.52s, and a wait adds to it directly. The
+# posted-snapshot fix already covers the trigger instant whenever Home
+# Assistant sends an image, so this is insurance for the JSON-only path.
+POST_TRIGGER_WAIT = float(os.getenv("POST_TRIGGER_WAIT", "0"))
+
+# Grace after a new segment appears, so ffmpeg finishes closing it.
+SEGMENT_SETTLE = float(os.getenv("SEGMENT_SETTLE", "0.6"))
+
+
+async def _await_trigger_segment(camera):
+    """Wait until a segment newer than the trigger lands, or the wait ends.
+
+    Returns the seconds actually spent, for the log.
+    """
+    if POST_TRIGGER_WAIT <= 0 or BUFFER_MODE != "segments":
+        return 0.0
+    started = time.monotonic()
+    try:
+        buf = segments.get(camera, stream_url(camera))
+        before = buf.age()
+    except Exception:
+        return 0.0
+    while time.monotonic() - started < POST_TRIGGER_WAIT:
+        await asyncio.sleep(0.25)
+        try:
+            now = buf.age()
+        except Exception:
+            break
+        # age() resets when a new complete segment appears.
+        if now is not None and before is not None and now < before:
+            # Do NOT read immediately. age() drops at the instant ffmpeg
+            # closes one segment and opens the next, and reading on that
+            # boundary catches the file mid-flush: it decodes partially and
+            # the burst comes back short. Measured 2026-08-21 -- enabling the
+            # wait took thin bursts (<15 frames) from 2/39 events to 4/12,
+            # including one with a 92s gap before it, so it was the boundary
+            # and not contention. Let the writer finish closing.
+            await asyncio.sleep(SEGMENT_SETTLE)
+            break
+    return time.monotonic() - started
+
 
 @app.get("/health")
 def health():
     return {"ok": True, "host": config.HOST,
             "cameras": list(CAMERAS), "buffer_mode": BUFFER_MODE,
             "buffers": (segments.all_status() if BUFFER_MODE == "segments"
-                        else streamer.all_status())}
+                        else streamer.all_status()),
+            "warnings": list(_warnings)}
 
 
 @app.get("/events")
@@ -303,14 +386,40 @@ def _refresh_backgrounds():
                 streak = _busy_streak.get(cam, 0)
 
                 if quiet:
-                    detect.update_background(cam, frame)
+                    # alpha=1.0: REPLACE the model, do not blend into it.
+                    # The default 0.05 moves it 5% toward the current frame,
+                    # which at one check per BG_REFRESH_SECONDS needs ~45
+                    # cycles -- nearly four hours -- to catch up. The guard
+                    # then re-fires every 20 minutes forever while every
+                    # event in between is scored against a model that is
+                    # still wrong. Seen on 2026-08-18: the log filled with
+                    # "treating the model as stale and relearning" all night
+                    # while events reported a steady ~88000 px of "motion"
+                    # that was really the wall and the planter under changed
+                    # light. A model declared stale is wrong, so throw it
+                    # away rather than averaging the wrong answer in.
+                    detect.update_background(cam, frame, alpha=1.0)
                     _busy_streak[cam] = 0
                 elif streak + 1 >= BG_STALE_AFTER:
                     print(f"  {cam}: {streak + 1} busy checks in a row "
                           f"({info['motion_frac'] * 100:.1f}% motion) -- "
                           f"treating the model as stale and relearning",
                           flush=True)
-                    detect.update_background(cam, frame)
+                    # alpha=1.0 here too -- this is the branch the comment
+                    # above is actually about. Until 2026-08-25 this call
+                    # used the default BG_ALPHA=0.05, so a model already
+                    # declared WRONG was blended 5% toward reality and stayed
+                    # wrong; the guard then re-fired every 20 minutes forever,
+                    # which is exactly the 2026-08-18 pathology the comment
+                    # describes. Measured live on odd-fellow at 13:58: one
+                    # minute after a "relearn" the outside model still
+                    # disagreed with the scene over 3.16% of the ROI (8242 px,
+                    # tracing a doormat under moved sun, no animal present);
+                    # replacing instead of blending scored 0.0000 / 0 px. The
+                    # quiet branch can never rescue it because 3.16% is 15x
+                    # the 0.002 quiet threshold. Safe because BG_STALE_AFTER=4
+                    # is 20 minutes of sustained busy and visits run 9-11 min.
+                    detect.update_background(cam, frame, alpha=1.0)
                     _busy_streak[cam] = 0
                 else:
                     _busy_streak[cam] = streak + 1
@@ -337,6 +446,12 @@ def _close_buffers():
     segments.stop_all()
 
 
+# Find the animal first, then ask what colour it is. The motion path is kept
+# underneath: it still feeds the background model, still fills the diagnostic
+# columns in events.csv, and still decides if the model file is missing.
+USE_DETECTOR = os.getenv("USE_DETECTOR", "1") not in ("0", "false", "no")
+
+
 def score_frame(frame, camera):
     """Score one frame. Returns (verdict, reasoning, stats, info, ir)."""
     mask, info = detect.motion_mask(frame, camera)
@@ -350,8 +465,153 @@ def score_frame(frame, camera):
         stats = measure(frame, mask)
         if stats["is_ir"]:
             ir_feat = detect.ir_features(frame, mask, camera)
+
+    if USE_DETECTOR and animal.available():
+        found = animal.best_box(frame)
+        if found is None:
+            # Abstain rather than vote. On a real raid the detector fired on
+            # as few as 1 of 15 frames, so treating "no detection" as
+            # evidence of absence would drown every true positive in its own
+            # burst.
+            return ("no_animal", "no animal detected in frame",
+                    stats, {**info, "det_conf": None}, ir_feat)
+        # A person is the one thing that must never be fired on, and the
+        # species label will not say so -- Dima came back as class 17 on
+        # 2026-08-23 and was classified orange_cat. Abstain instead: "person"
+        # is not in detect.DECISIVE, so it neither votes nor can win.
+        if found.get("person_overlap", 0.0) >= animal.PERSON_OVERLAP:
+            return ("person",
+                    f"animal box {found['person_overlap']:.0%} covered by a "
+                    "person detection -- refusing to classify",
+                    stats, {**info, "det_conf": found["conf"]}, ir_feat)
+
+        feats = detect.box_features(frame, found["box"])
+        box_ir = (detect.box_ir_features(frame, found["box"])
+                  if stats["is_ir"] else None)
+        verdict, _, reasoning = detect.classify_detection(feats, box_ir)
+        info = {**info, "det_conf": found["conf"],
+                "box_frac": (feats or {}).get("box_frac"),
+                "warm_margin": (feats or {}).get("warm_margin")}
+        if feats:
+            stats = {**stats, "warm_pct": feats["warm_pct"]}
+        return verdict, reasoning, stats, info, ir_feat
+
     verdict, _, reasoning = detect.classify(stats, info, ir_feat)
     return verdict, reasoning, stats, info, ir_feat
+
+
+# Every failure this project has had was SILENT and looked exactly like a
+# quiet night: stale buffer frames (2026-08-17), a "relearn" that only nudged
+# the model 5% (2026-08-18), an ROI that cropped out the animals. In each case
+# the verdict column read clean while the detector was blind. Nothing can tell
+# "the patio was empty" from "I was looking at the wrong minute" -- so the
+# server has to watch its own vital signs and say when they look wrong.
+_recent = collections.deque(maxlen=12)
+_warnings = []
+
+
+def _self_check(camera, info, roi_px):
+    """Flag states that mean the detector is not seeing, whatever it reported.
+
+    These are checks on the SHAPE of recent measurements, not on verdicts --
+    a verdict cannot reveal that it was computed against the wrong minute.
+    """
+    _recent.append((camera, int(info.get("motion_px") or 0)))
+    mine = [px for c, px in _recent if c == camera]
+    out = []
+
+    # A near-constant, large motion area across events is not motion. Real
+    # animals differ frame to frame; a wrong background model does not.
+    if len(mine) >= 5 and roi_px:
+        last = mine[-5:]
+        hi, lo = max(last), min(last)
+        if hi > 0.02 * roi_px and hi - lo <= 0.05 * hi:
+            out.append(f"motion_px pinned near {hi} across 5 events -- "
+                       "background model is probably wrong, not the scene")
+
+    # Nothing changing over many events, when events keep arriving, means
+    # something upstream is feeding us the wrong frames.
+    if (not (USE_DETECTOR and animal.available())
+            and len(mine) >= 8 and all(p == 0 for p in mine[-8:])):
+        out.append("8 consecutive events with zero motion pixels -- "
+                   "detector may be blind (check buffer freshness and ROI)")
+
+    # Under the detector path the equivalent blindness is the model failing
+    # to load, which would silently drop every event back to abstaining.
+    if USE_DETECTOR and not animal.available():
+        out.append(f"animal detector unavailable ({animal.MODEL_PATH}) -- "
+                   "falling back to the motion path")
+
+    # A model that has not been written recently is not tracking the light.
+    try:
+        age = time.time() - os.path.getmtime(detect._bg_path(camera))
+        if age > 3 * BG_REFRESH_SECONDS:
+            out.append(f"background model for {camera} is {age / 60:.0f} min "
+                       "old -- refresh thread may be stuck")
+    except OSError:
+        out.append(f"no background model on disk for {camera}")
+
+    for w in out:
+        print(f"  !! {camera}: {w}", flush=True)
+    _warnings[:] = [f"{camera}: {w}" for w in out]
+    return out
+
+
+def _buffer_is_current(camera, age):
+    """Is the buffered video recent enough to describe the event?"""
+    if age is None or age <= MAX_BUFFER_AGE:
+        return True
+    print(f"  {camera}: buffer is {age:.0f}s stale (limit "
+          f"{MAX_BUFFER_AGE:.0f}s) -- ignoring it and grabbing fresh frames",
+          flush=True)
+    return False
+
+
+def _save_burst(frames, scored, camera, stamp):
+    """Write every scored frame, in order, with its own verdict in the name.
+
+    The order is the order they were voted on, so a burst that turns out to be
+    stale, gappy, or duplicated is visible at a glance in the file listing --
+    which is the failure this exists to catch. The per-frame verdict is in the
+    filename so a directory listing already tells you where the classifier
+    disagreed with itself, without opening anything.
+    """
+    d = f"{EVENT_DIR}/{camera}-{stamp}"
+    try:
+        os.makedirs(d, exist_ok=True)
+        for i, (frame, s) in enumerate(zip(frames, scored)):
+            if frame is None:
+                continue
+            px = s[3].get("motion_px", 0)
+            cv2.imwrite(f"{d}/{i:02d}-{s[0]}-px{px}.jpg", frame)
+    except OSError as exc:
+        print(f"  could not save burst: {exc}", flush=True)
+
+
+# Home Assistant should not have to know our verdict vocabulary, or which
+# verdicts are decisive. It gets one field it can branch on.
+#
+# Note "not_orange" is honest about what we actually know: the animal is not
+# ginger. That covers Dima's black-and-white cats, but also the possum and the
+# two skunks -- nothing here identifies a resident positively, and a
+# notification should not claim it does.
+MIN_NOTIFY_CONFIDENCE = 0.6
+
+
+def _notify_class(verdict, confidence, tally):
+    """(class, headline) for the notification layer.
+
+    Classes: intruder / not_orange / unsure / none.
+    """
+    decisive = sum(v for k, v in tally.items() if k in detect.DECISIVE)
+    if verdict == "orange_cat" and confidence >= MIN_NOTIFY_CONFIDENCE:
+        return "intruder", "Orange cat at the door"
+    if verdict == "no_orange" and confidence >= MIN_NOTIFY_CONFIDENCE:
+        return "not_orange", "An animal, not the orange cat"
+    if decisive or verdict == "unmeasurable":
+        # Something was there; the frames disagreed or could not be scored.
+        return "unsure", "An animal, but could not tell which"
+    return "none", "Nothing seen"
 
 
 @app.post("/motion")
@@ -362,6 +622,14 @@ async def motion(request: Request, image: UploadFile | None = None,
     os.makedirs(EVENT_DIR, exist_ok=True)
     entry = {"ts": stamp, "camera": camera, "status": "received"}
     RECENT_EVENTS.append(entry)
+
+    # Give the segment covering the trigger time to finish writing. No-op
+    # unless POST_TRIGGER_WAIT is set; see the comment on that constant.
+    waited = await _await_trigger_segment(
+        camera if camera in CAMERAS else "outside")
+    if waited:
+        print(f"{stamp}  waited {waited:.1f}s for the trigger segment",
+              flush=True)
 
     if image is not None:
         # A posted snapshot is one frame at whatever resolution HA chose --
@@ -394,13 +662,42 @@ async def motion(request: Request, image: UploadFile | None = None,
                          if BUFFER_MODE == "segments"
                          else buffered.get(camera,
                                            stream_url(camera)).snapshot(BURST))
-                if extra:
-                    # Posted frame may differ in size from the stream; scoring
-                    # mixes fine, but keep them separate for the record.
-                    frames = extra + [f for f in frames
-                                      if f is not None
-                                      and f.shape == extra[0].shape]
+                age = (buffered.get(camera, stream_url(camera)).age()
+                       if BUFFER_MODE == "segments" else None)
+                if extra and _buffer_is_current(camera, age):
+                    # RESIZE the posted frame to the stream's shape; do not
+                    # test shapes for equality. HA snapshots at 640x480 or
+                    # 640x360 while the stream is 1024x576, so an equality
+                    # test discarded the posted frame on EVERY event -- 327
+                    # of 327 scored exactly 15 frames, never 16 -- while the
+                    # comment here claimed it was still scored.
+                    #
+                    # That cost a confirmed sighting. On 2026-08-21 04:19 the
+                    # burst ended at :31 and the orange cat arrived at :35;
+                    # the posted snapshot caught it, `animal.best_box` finds
+                    # it there (conf 0.42 at x=0.87-0.94), and this filter
+                    # threw the frame away. The event logged no_animal.
+                    #
+                    # Resizing rather than scoring at native size is
+                    # deliberate: `detect.update_background` REPLACES the
+                    # model whenever a frame's shape differs from it, so
+                    # letting a 640x360 frame through would silently reset
+                    # the background model on every posted event.
+                    th, tw = extra[0].shape[:2]
+                    scaled = []
+                    for f in frames:
+                        if f is None:
+                            continue
+                        if f.shape[:2] != (th, tw):
+                            f = cv2.resize(f, (tw, th))
+                        scaled.append(f)
+                    frames = extra + scaled
                     source = f"posted+{BUFFER_MODE}"
+                elif extra:
+                    fresh = grab_burst(stream_url(camera))
+                    if fresh:
+                        frames = fresh
+                        source = "posted+rtsp_fresh"
             except Exception as exc:
                 print(f"  buffer unavailable, using posted frame only: {exc}",
                       flush=True)
@@ -417,14 +714,11 @@ async def motion(request: Request, image: UploadFile | None = None,
         url = stream_url(camera)
         frames, source = [], "rtsp_cold"
         if BUFFER_MODE == "segments":
-            # The in-progress segment is dropped (partial mp4 has no index),
-            # so the newest scored frame is ~SEGMENT_SECONDS old. A fast
-            # arrival/exit fires the event inside that dropped segment and
-            # reads as zero motion (the orange cat's 2026-08-26 exit missed
-            # exactly this way). Wait for it to complete before decoding.
-            await asyncio.sleep(segments.SEGMENT_SECONDS + 0.5)
-            frames = segments.get(camera, url).frames(BURST)
-            source = "segments"
+            # Decode the seconds we already have; includes pre-trigger frames.
+            buf = segments.get(camera, url)
+            if _buffer_is_current(camera, buf.age()):
+                frames = buf.frames(BURST)
+                source = "segments"
         elif BUFFER_MODE == "decoded":
             frames = streamer.get(camera, url).snapshot(BURST)
             source = "ring_buffer"
@@ -444,7 +738,21 @@ async def motion(request: Request, image: UploadFile | None = None,
                 "source": source}
 
     scored = [score_frame(f, camera) for f in frames]
+
+    if SAVE_BURST:
+        _save_burst(frames, scored, camera, stamp)
+
     verdict, confidence, tally = detect.vote([s[0] for s in scored])
+
+    # People are the one class that must never be fired on, and the detector
+    # sees a person in only some frames of a burst: on 2026-08-18 at 21:55 a
+    # person was found on frame 03 but not on frame 07, which is the frame
+    # that scored 45.6% warm and voted orange. One sighting anywhere in the
+    # burst is enough -- a person does not become a cat between frames.
+    if verdict == "orange_cat" and any(s[0] == "person" for s in scored):
+        print(f"{stamp}  {camera}: person seen in this burst -- "
+              f"suppressing the orange_cat verdict", flush=True)
+        verdict, confidence = "person", 0.0
 
     if verdict is None:
         # Nothing decisive -- report the most common abstention instead.
@@ -464,13 +772,16 @@ async def motion(request: Request, image: UploadFile | None = None,
     path = f"{EVENT_DIR}/{camera}-{stamp}.jpg"
     cv2.imwrite(path, keep)
 
+    kind, _ = _notify_class(verdict, confidence, tally)
     row = {"ts": stamp, "camera": camera, "file": path, "verdict": verdict,
+           "class": kind,
            "confidence": round(confidence, 3), "source": source,
            "reasoning": reasoning, "frames": len(frames),
            "votes": ";".join(f"{k}={v}" for k, v in sorted(tally.items())),
            "width": keep.shape[1], "height": keep.shape[0],
            **stats, **{k: v for k, v in info.items() if k != "reason"},
            **(ir_feat or {})}
+    _self_check(camera, info, info.get("roi_px") or 0)
     record(row)
     entry.update(camera=camera, status="processed", verdict=verdict,
                  confidence=round(confidence, 3),
@@ -481,6 +792,8 @@ async def motion(request: Request, image: UploadFile | None = None,
           f"({confidence * 100:3.0f}% of {len(frames)} frames)  "
           f"{keep.shape[1]}x{keep.shape[0]}  "
           f"votes={row['votes']}  src={source}", flush=True)
+
+    kind, headline = _notify_class(verdict, confidence, tally)
 
     if SOUND_ON_ANY_MOTION:
         fire, why = True, "bypass (any motion)"
@@ -505,6 +818,7 @@ async def motion(request: Request, image: UploadFile | None = None,
                              daemon=True, name=f"deter-{camera}").start()
 
     return {"ok": True, "camera": camera, "verdict": verdict,
+            "class": kind, "headline": headline,
             "confidence": round(confidence, 3), "frames": len(frames),
             "votes": tally, "source": source, "stats": stats,
             "motion": info, "ir": ir_feat, "reasoning": reasoning,
