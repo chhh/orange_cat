@@ -27,12 +27,14 @@ BG_DIR = "frames"
 
 # (x0, y0, x1, y1) as fractions of width/height.
 #
-# outside: door plus the concrete approach, gate excluded. Chosen empirically --
-#          this crop holds background warm pixels to 0.52% versus 4.38% for the
-#          full frame, while keeping 645x317 px of usable area.
+# outside: full width, top band cut. The old x < 0.63 crop hid cats on the
+#          right side of the frame entirely -- the orange cat's 2026-08-26
+#          visit scored 0 motion. Static warm objects cannot contribute
+#          anyway (scoring is restricted to motion pixels), so keep the gate
+#          and planter in frame.
 # inside:  the pegboard wall with the flap, plus the floor in front of it.
 ROI = {
-    "outside": (0.00, 0.45, 0.63, 1.00),
+    "outside": (0.00, 0.30, 1.00, 1.00),
     "inside": (0.35, 0.30, 1.00, 1.00),
 }
 

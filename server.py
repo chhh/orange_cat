@@ -25,6 +25,7 @@ Run:  uv run server.py            (listens on 0.0.0.0:8080)
 """
 
 import csv
+import asyncio
 import os
 import random
 import threading
@@ -416,7 +417,12 @@ async def motion(request: Request, image: UploadFile | None = None,
         url = stream_url(camera)
         frames, source = [], "rtsp_cold"
         if BUFFER_MODE == "segments":
-            # Decode the seconds we already have; includes pre-trigger frames.
+            # The in-progress segment is dropped (partial mp4 has no index),
+            # so the newest scored frame is ~SEGMENT_SECONDS old. A fast
+            # arrival/exit fires the event inside that dropped segment and
+            # reads as zero motion (the orange cat's 2026-08-26 exit missed
+            # exactly this way). Wait for it to complete before decoding.
+            await asyncio.sleep(segments.SEGMENT_SECONDS + 0.5)
             frames = segments.get(camera, url).frames(BURST)
             source = "segments"
         elif BUFFER_MODE == "decoded":
