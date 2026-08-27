@@ -84,3 +84,31 @@ max_interval = 3
 
 When it fires, the `/motion` JSON carries `"sound": "<file>"`; the server log
 prints `-> playing <file> (<why>)`.
+
+## Animal detector (YOLOv8n ONNX)
+
+`animal.py` runs a YOLOv8n model under `cv2.dnn` to find the animal before
+the colour classifier scores it. The model file is **not in the repo**
+(`models/` is gitignored) — install it once:
+
+```bash
+mkdir -p models
+# one-time, on a dev machine -- ultralytics pulls ~2 GB of torch/CUDA wheels
+pip install ultralytics
+yolo export model=yolov8n.pt format=onnx imgsz=640 opset=12
+mv yolov8n.onnx models/
+```
+
+Custom path via env: `ANIMAL_MODEL=/path/to/yolov8n.onnx` (default
+`models/yolov8n.onnx`).
+
+Validate:
+
+```bash
+uv run evaluate_detector.py
+# expect: 5/5 intruder, 24/24 our-cats, 1/1 possum
+```
+
+Without the model the server **falls back to the motion-mask path**
+(`animal.available()` is False) and logs a warning in `/health` — detection
+degrades but still runs.
