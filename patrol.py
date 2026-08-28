@@ -1,16 +1,29 @@
 """Independent watcher: sample the outside camera and run the SAME detector
 the server uses, bypassing Protect's motion zones and Home Assistant entirely.
 
-Read-only: never writes events.csv, never touches bg_*.npy.
-Purpose: distinguish "nothing is happening on that patio" from
-"things are happening and the HA -> POST path is broken".
+Read-only on the detector side: never writes events.csv, never touches
+bg_*.npy. It is also the process that ARMS THE DETERRENT at night -- see
+deter.py for the gates.
+
+Two rate limits live here and they must stay separate:
+
+  * REPORTING is rate-limited (a resident napping on the patio would otherwise
+    log every 2s all night).
+  * THE DETERRENT IS NOT. Until 2026-08-28 the report limit sat in front of the
+    deterrent call, so after one orange report deter.consider() was not asked
+    again for 120s. A `too_far` or `at_flap` hold was therefore a one-shot no:
+    the 01:25 hold that night was never re-checked while the cat walked to the
+    door and went in. The deterrent now sees every orange frame; its own
+    shared cooldown prevents double fires.
+
+The per-frame logic is in classify_frame() so evaluate_deter.py can replay it
+over recorded video with the same code the live loop runs.
 """
 import os, sys, glob, subprocess, time, tempfile
 sys.path.insert(0, "/home/david/projects/ocp")
 os.chdir("/home/david/projects/ocp")
 import cv2, detect, animal
 try:
-    sys.path.insert(0, "/home/david/ocp-watch")
     import deter
 except Exception as _e:          # never let the deterrent break detection
     deter = None
@@ -19,7 +32,7 @@ from capture import measure
 
 CAM = "outside"
 SAVE = "/home/david/ocp-watch/patrol"
-os.makedirs(SAVE, exist_ok=True)
+
 
 def burst_frames(n):
     """The n FRESHEST frames available, newest last.
@@ -86,120 +99,167 @@ def newest_frame():
     return None
 
 
-print(f"patrol armed {time.strftime('%H:%M:%S')}: YOLO on {CAM} every 30s, "
-      f"detector_available={animal.available()}", flush=True)
+def classify_frame(f):
+    """One frame -> (box, verdict, reasoning, info); box is None if no animal.
+
+    Mirrors server.score_frame: classify the detector box the way the real
+    detector would, so this is a fallback verdict and not merely "something
+    moved". Read-only -- nothing is recorded.
+    """
+    box = animal.best_box(f)
+    if box is None:
+        return None, None, None, None
+    verdict = reasoning = "?"
+    try:
+        mask, minfo = detect.motion_mask(f, CAM)
+        stats = measure(f, mask if mask is not None
+                        else detect.roi_mask(f.shape, CAM))
+        feats = detect.box_features(f, box["box"])
+        box_ir = (detect.box_ir_features(f, box["box"])
+                  if stats.get("is_ir") else None)
+        verdict, _, reasoning = detect.classify_detection(feats, box_ir)
+    except Exception as e:
+        reasoning = f"classify failed: {e}"
+    _, info = detect.motion_mask(f, CAM)
+    return box, verdict, reasoning, info
+
 
 # Rate limits are verdict-aware. A resident can nap on that patio for hours and
 # would otherwise re-report every 2 min all night. The intruder and people must
-# never be suppressed for long.
+# never be suppressed for long. THESE GATE LOGGING ONLY -- see module docstring.
 MIN_GAP = 120.0        # orange_cat / person / unknown
 MIN_GAP_BORING = 900.0 # a repeated no_orange -- same animal, still there
 HEARTBEAT = 1800.0     # prove liveness twice an hour
-last_report = 0.0
-last_verdict = None
-last_beat = time.time()
-n_frames = n_det = n_suppressed = 0
 
-while True:
-    try:
-        f = newest_frame()
-        if f is not None:
-            n_frames += 1
-            box = animal.best_box(f)
-            if box is not None:
-                n_det += 1
-                # Mirror server.score_frame: classify the box the same way the
-                # real detector would, so this is a fallback verdict and not
-                # merely "something moved". Read-only -- nothing is recorded.
-                verdict = reasoning = "?"
-                try:
-                    mask, minfo = detect.motion_mask(f, CAM)
-                    stats = measure(f, mask if mask is not None
-                                    else detect.roi_mask(f.shape, CAM))
-                    feats = detect.box_features(f, box["box"])
-                    box_ir = (detect.box_ir_features(f, box["box"])
-                              if stats.get("is_ir") else None)
-                    verdict, _, reasoning = detect.classify_detection(feats, box_ir)
-                except Exception as e:
-                    reasoning = f"classify failed: {e}"
 
-                # Decide whether this one is worth reporting. A PERSON is
-                # never "boring": person_overlap wins over the verdict, because
-                # classify_detection happily returns no_orange for a person and
-                # people are a must-never-fire class. Same for orange_cat.
-                gap = time.time() - last_report
-                is_person = box.get("person_overlap", 0.0) >= animal.PERSON_OVERLAP
-                boring = (verdict == "no_orange"
-                          and last_verdict == "no_orange"
-                          and not is_person)
-                if gap < (MIN_GAP_BORING if boring else MIN_GAP):
-                    n_suppressed += 1
-                    last_verdict = verdict
-                    box = None
-            if box is not None:
-                last_report = time.time()
-                last_verdict = verdict
-                _, info = detect.motion_mask(f, CAM)
-                ts = time.strftime("%H%M%S")
-                path = f"{SAVE}/patrol-{ts}.jpg"
-                cv2.imwrite(path, f)
-                po = box.get("person_overlap", 0.0)
-                kind = "PERSON" if po >= animal.PERSON_OVERLAP else "ANIMAL"
-                # An orange_cat verdict alone is NOT trustworthy at dusk:
-                # low sun on the grey siding scored 89.7% ginger / 68.1pp on an
-                # EMPTY patio at 19:37 and 83.3% at 19:42 (2026-08-25). The
-                # detector path never consults bg_corr, so nothing else rejects
-                # it. Area separates them -- a cat occupies the frame, a light
-                # patch does not:
-                #   real ginger 18:47  det_conf 0.91  motion_frac 0.1109
-                #   sunlight    19:37  det_conf 0.32  motion_frac 0.0194
-                #   sunlight    19:42  det_conf 0.37  motion_frac 0.0039
-                # Fitted to 3 points, so LABEL rather than suppress -- never
-                # drop a candidate, just stop calling weak ones certain.
-                if verdict == "orange_cat":
-                    strong = box["conf"] >= 0.5 or info["motion_frac"] >= 0.05
-                    flag = (" *** ORANGE CAT ***" if strong else
-                            " ~orange-ish LOW-CONFIDENCE (likely sunlight on the"
-                            " siding -- LOOK AT THE FRAME before believing it)")
+class Reporter:
+    """Decides whether a detection is worth a log line and a saved frame."""
+
+    def __init__(self):
+        self.last_report = 0.0
+        self.last_verdict = None
+        self.n_suppressed = 0
+
+    def should_report(self, verdict, is_person, now):
+        gap = now - self.last_report
+        boring = (verdict == "no_orange"
+                  and self.last_verdict == "no_orange"
+                  and not is_person)
+        self.last_verdict = verdict
+        if gap < (MIN_GAP_BORING if boring else MIN_GAP):
+            self.n_suppressed += 1
+            return False
+        self.last_report = now
+        return True
+
+
+def describe(box, verdict, reasoning, info, path):
+    po = box.get("person_overlap", 0.0)
+    kind = "PERSON" if po >= animal.PERSON_OVERLAP else "ANIMAL"
+    # An orange_cat verdict alone is NOT trustworthy at dusk: low sun on the
+    # grey siding scored 89.7% ginger / 68.1pp on an EMPTY patio at 19:37 and
+    # 83.3% at 19:42 (2026-08-25). Area separates them -- a cat occupies the
+    # frame, a light patch does not. Fitted to 3 points, so LABEL rather than
+    # suppress. The "sunlight" wording only makes sense in daylight; at night a
+    # weak box is a distant cat (22:10 on 08-25 was real).
+    if verdict == "orange_cat":
+        strong = box["conf"] >= 0.5 or info["motion_frac"] >= 0.05
+        night = deter is not None and deter._in_window()
+        if strong:
+            flag = " *** ORANGE CAT ***"
+        elif night:
+            flag = (" ~orange-ish LOW-CONFIDENCE (weak box at night: probably"
+                    " distant -- LOOK AT THE FRAME)")
+        else:
+            flag = (" ~orange-ish LOW-CONFIDENCE (likely sunlight on the"
+                    " siding -- LOOK AT THE FRAME before believing it)")
+    else:
+        flag = ""
+    return (f"PATROL {kind}{flag} verdict={verdict} det_conf={box['conf']:.2f} "
+            f"person_overlap={po:.2f} motion_frac={info['motion_frac']:.4f} "
+            f"-> {path} | {reasoning} "
+            f"(if no POST /motion follows within ~1 min, the HA path is the fault)")
+
+
+class ChangeLogger:
+    """deter logs a line per gate per call; at 2s cadence a hold would repeat
+    every cycle. Print a gate's reasoning only when it differs from the last
+    thing printed, so the log reads as a sequence of decisions."""
+
+    def __init__(self):
+        self.last = None
+
+    def __call__(self, msg):
+        key = msg.split(" -- ")[0].split(". burst=")[0]
+        if key != self.last:
+            self.last = key
+            print(msg, flush=True)
+
+
+def main():
+    os.makedirs(SAVE, exist_ok=True)
+    print(f"patrol armed {time.strftime('%H:%M:%S')}: YOLO on {CAM}, 2s in the "
+          f"deterrent window / 30s outside, detector_available={animal.available()}",
+          flush=True)
+    rep = Reporter()
+    dlog = ChangeLogger()
+    last_beat = time.time()
+    n_frames = n_det = 0
+    last_decision = None
+
+    while True:
+        try:
+            f = newest_frame()
+            if f is not None:
+                n_frames += 1
+                box, verdict, reasoning, info = classify_frame(f)
+                if box is not None:
+                    n_det += 1
+                    is_person = box.get("person_overlap", 0.0) >= animal.PERSON_OVERLAP
+                    if rep.should_report(verdict, is_person, time.time()):
+                        ts = time.strftime("%H%M%S")
+                        path = f"{SAVE}/patrol-{ts}.jpg"
+                        cv2.imwrite(path, f)
+                        print(f"{time.strftime('%H:%M:%S')} "
+                              f"{describe(box, verdict, reasoning, info, path)}",
+                              flush=True)
+
+                    # The deterrent is asked on EVERY orange frame, reported or
+                    # not. A single patrol frame is the false-positive
+                    # signature, so deter pulls a real burst and votes; a hold
+                    # (too_far / at_flap) is re-checked next cycle, 2s later,
+                    # instead of after the 120s report gap.
+                    if verdict == "orange_cat" and deter is not None:
+                        try:
+                            decision = deter.consider_and_escalate(
+                                burst_frames, log=dlog)
+                            if decision != last_decision:
+                                print(f"{time.strftime('%H:%M:%S')} deterrent "
+                                      f"decision: {decision}", flush=True)
+                            last_decision = decision
+                            if decision == "fired":
+                                deter.capture_reaction(
+                                    f"fire-{time.strftime('%Y%m%d-%H%M%S')}")
+                        except Exception as e:
+                            print(f"  deterrent error: {e}", flush=True)
                 else:
-                    flag = ""
-                print(f"{time.strftime('%H:%M:%S')} PATROL {kind}{flag} "
-                      f"verdict={verdict} det_conf={box['conf']:.2f} "
-                      f"person_overlap={po:.2f} "
-                      f"motion_frac={info['motion_frac']:.4f} -> {path} "
-                      f"| {reasoning} "
-                      f"(if no POST /motion follows within ~1 min, the HA path "
-                      f"is the fault)", flush=True)
+                    last_decision = None
+                    dlog.last = None
+            if time.time() - last_beat >= HEARTBEAT:
+                last_beat = time.time()
+                print(f"{time.strftime('%H:%M:%S')} patrol heartbeat: "
+                      f"{n_frames} frames sampled, {n_det} detections "
+                      f"({rep.n_suppressed} reports suppressed). "
+                      f"Absence of these lines means the patrol died.", flush=True)
+        except Exception as e:
+            print(f"{time.strftime('%H:%M:%S')} patrol error: {e}", flush=True)
+        # 2s inside the window: the cat crosses the patio in about 3 seconds.
+        # A cycle costs ~0.3s, plus ~0.5s when the deterrent is consulted.
+        try:
+            time.sleep(2 if (deter is not None and deter._in_window()) else 30)
+        except Exception:
+            time.sleep(30)
 
-                # A single patrol frame is the false-positive signature, so
-                # never act on it directly: pull a real burst and vote.
-                if verdict == "orange_cat" and deter is not None:
-                    try:
-                        decision = deter.consider_and_escalate(burst_frames)
-                        if decision == "fired":
-                            deter.capture_reaction(
-                                f"fire-{time.strftime('%Y%m%d-%H%M%S')}")
-                    except Exception as e:
-                        print(f"  deterrent error: {e}", flush=True)
-        if time.time() - last_beat >= HEARTBEAT:
-            last_beat = time.time()
-            print(f"{time.strftime('%H:%M:%S')} patrol heartbeat: "
-                  f"{n_frames} frames sampled, {n_det} detections "
-                  f"({n_suppressed} suppressed: {MIN_GAP:.0f}s gap, or {MIN_GAP_BORING:.0f}s "
-                  f"for a repeated no_orange). "
-                  f"Absence of these lines means the patrol died.", flush=True)
-    except Exception as e:
-        print(f"{time.strftime('%H:%M:%S')} patrol error: {e}", flush=True)
-    # Sample DENSELY while the deterrent is live. On 2026-08-27 the stray
-    # loitered by the gate for ~8 frames at near-zero motion and then crossed
-    # to the flap in about 3 -- a 30s poll misses that entirely (it did). The
-    # loiter is the only window wide enough to fire into, and it is exactly
-    # what a motion trigger does not see. Outside the window, back off.
-    try:
-        # 2s, not 5s. The cat crosses the patio in about 3 seconds -- sampling
-        # every 5 means we can miss an arrival entirely and only catch it on
-        # the way out, which is what happened three times on 2026-08-28. A
-        # cycle costs ~0.3s, so 2s is ~15% duty on 8 cores.
-        time.sleep(2 if (deter is not None and deter._in_window()) else 30)
-    except Exception:
-        time.sleep(30)
+
+if __name__ == "__main__":
+    main()
