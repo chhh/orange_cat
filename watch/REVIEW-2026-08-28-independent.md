@@ -14,17 +14,17 @@ The goal being judged: **stop the orange stray coming to Dima's house.**
   through the detector shows why: the cat is on-camera for 2.5–5.5 s on exit, the
   system's frame-to-sound latency is ~5 s. That is not a tuning problem.
 - **The project is aiming at the wrong moment.** Every fire so far was at an exit
-  (the cat has already eaten; per Dave, "it is leaving anyway"). The two moments
-  that matter are the *approach* (1–30 s of loitering, per Dima) and the
-  *feeding* (9–18 min stationary inside). Neither is being targeted today; the
-  second is not even on the plan.
+  (the cat has already eaten; per Dave, "it is leaving anyway"). The moment that
+  matters is the *approach* (1–30 s of loitering, per Dima), and it is not being
+  targeted today. (Firing indoors during the meal was considered and ruled out
+  by Dave on 2026-08-28: the family sleeps nearby.)
 - **Whether sound deters this cat at all is unknown**, and the one datum (a
   resident flinched and did not leave; it was still sitting by the gate 30 s
   later in the video) is mildly discouraging. Plan to measure this, not assume it.
 
 My recommended order: (1) fix the two things that keep the system from taking
-the shot it already has, (2) move to a continuous low-latency loop, (3) add the
-inside-camera deterrent, (4) run a measurement plan for two weeks before buying
+the shot it already has, (2) move to a continuous low-latency loop, (3) aim at the
+arrival in the open, (4) run a measurement plan for two weeks before buying
 water hardware.
 
 ## 2. What is solid (no action needed)
