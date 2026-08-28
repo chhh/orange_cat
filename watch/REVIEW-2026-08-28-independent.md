@@ -167,7 +167,8 @@ and 01:25 sighting both show loitering mid-patio. With R1+R2 this becomes a
 multi-second window. Fire on *arrival in the open* (height ≥ ~20%, not in flap
 zone, moving toward the door or stationary), not on a fitted "closing" rule.
 
-**Inside, at the food.** The stray is inside for 9–18 min and stationary at the
+**Inside, at the food — RULED OUT 2026-08-28 (Dave: kids and parents sleeping).**
+Kept for the record only. The stray is inside for 9–18 min and stationary at the
 bowl. Latency is irrelevant there. The inside camera has a speaker
 (`media_player.garage_speaker`, "Cat Door Inside Speaker") and a calibrated IR
 discriminator (`BOX_IR_REL_BRIGHT`, `BOX_IR_CV`; orange 1.40–1.67 vs tuxedo
@@ -230,5 +231,5 @@ ignore this.
    destroy the evidence about what a single sound does.
 3. Can the cameras' GOP/keyframe interval be shortened in Protect? (Only matters
    if R2 is not done.)
-4. Is an inside-camera sound at night acceptable to Dima's household (R3)?
+4. ~~Inside-camera sound~~ — answered: not acceptable, family sleeps nearby.
 5. Can the food be unavailable at night (R6)?

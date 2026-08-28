@@ -85,5 +85,5 @@ The patrol is unaffected. One line on his side: `--max-time 5`. See
 ## Next (from the review, in order)
 
 1. R2: one continuous loop on a held-open RTSP stream (frame age ~0.7s).
-2. R3: fire on arrival in the open; inside-camera deterrent needs Dima's yes.
+2. R3: fire on arrival in the open. (Inside-camera sound is ruled out -- family sleeps nearby.)
 3. D6 person-suppression fix before any water hardware.
