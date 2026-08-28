@@ -610,6 +610,34 @@ async def motion(request: Request, image: UploadFile | None = None,
               f"suppressing the orange_cat verdict", flush=True)
         verdict, confidence = "person", 0.0
 
+    # Deterrent. Wired here rather than to the patrol because the patrol polls
+    # blind every 30s and missed the confirmed stray at 02:59 on 2026-08-27
+    # entirely, while this path caught it 13/15 on the motion trigger.
+    # deter.consider re-scores the burst with its own gates: >= 2 orange frames
+    # (the false-positive population sits at exactly 1), and a DIRECT person
+    # check, because best_box() hides a lone person by returning None.
+    if verdict == "orange_cat" and camera == "outside":
+        try:
+            import deter
+            decision = deter.consider_and_escalate(
+                # The NEWEST frames, not the oldest. segments.frames() spreads
+                # its burst across ~10s oldest-first -- deliberately, so early
+                # frames catch the cat far enough away to measure against the
+                # background. Good for classifying, wrong for aiming: fr[:n]
+                # would have the deterrent judging where the cat was ten
+                # seconds ago, and would make deter's "at the flap RIGHT NOW"
+                # check look at the oldest detections instead of the newest.
+                lambda n, fr=frames: fr[-n:],
+                log=lambda m: print(m, flush=True))
+            if decision == "fired":
+                # 35s of copying -- never block the request handler.
+                threading.Thread(target=deter.capture_reaction,
+                                 args=(f"fire-{stamp}",),
+                                 kwargs={"log": lambda m: print(m, flush=True)},
+                                 daemon=True).start()
+        except Exception as exc:
+            print(f"  deterrent error: {exc}", flush=True)
+
     if verdict is None:
         # Nothing decisive -- report the most common abstention instead.
         counts = {}

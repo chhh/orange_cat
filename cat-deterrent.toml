@@ -1,0 +1,25 @@
+# Cat deterrent config. Comments allowed. Secrets (RTSP keys, HA token)
+# stay in .env -- everything else lives here.
+
+[server]
+host = "192.168.7.1"        # UDM over WireGuard (odd-fellow is remote)
+buffer_mode = "segments"    # segments | decoded | off
+bg_refresh_seconds = 300
+
+[ha]
+host = "192.168.1.133"
+speaker = "media_player.nursery_speaker_2" # HA entity name that can playback a sound file
+ssh_host = "ha"  # optional ssh alias for listing sounds, only works if you have ssh access to HA server
+
+[sound]
+# random pick per trigger; each must exist in HA config/www/sounds/
+# only these are actually present in HA config/www/sounds/ (verified 2026-08-26)
+# DRILL_boost3 chosen 2026-08-26: Dave and Dima both rated it the most
+# startling, and it is the shortest (0.85s vs ~2s) with the fastest HA
+# roundtrip (1.2s vs 2.6s). A cat reacts to onset, not to duration.
+sounds = ["DRILL_boost3.wav"]
+near_door_min_bottom = 0.85 # bbox bottom fraction; 0 = gate off
+on_any_motion = false       # foot-test bypass - set true for testing motion-triggered actions
+min_interval = 2            # repeat window, seconds - while motion still present
+max_interval = 3            #    keeps repeating sounds every [min,max] seconds
+max_duration = 30           # hard stop for the repeat loop, seconds

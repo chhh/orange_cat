@@ -33,3 +33,7 @@ models/
 
 # labelled clip sets pulled off Protect (214MB); see AGENTS.md §8
 ooo/
+
+# backups and editor leftovers
+*.bak*
+*.pre-git
