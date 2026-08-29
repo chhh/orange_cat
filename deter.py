@@ -509,10 +509,21 @@ def escalate(grab_frames, log=_flush_print, already_played=1):
     return played
 
 
-def consider_and_escalate(grab_frames, log=_flush_print):
-    """consider(), and if it fired, keep escalating in the background."""
+def consider_and_escalate(grab_frames, log=_flush_print, escalate_grab=None):
+    """consider(), and if it fired, keep escalating in the background.
+
+    `escalate_grab` MUST return genuinely fresh frames on every call. The
+    decision to fire may be made on a burst that was already in hand (server.py
+    passes the frames from the motion POST), but the repeat loop asks "is the
+    cat STILL there, and NOT in the flap" every 2-3s, and a grabber that hands
+    back the same frames answers "yes, and no" forever. That happened on
+    2026-08-29 at 02:56: sounds 2-6 played at a cat the patrol could see in
+    the flap zone. Defaults to `grab_frames` for callers whose grabber is
+    already live (the patrol).
+    """
     decision = consider(grab_frames, log=log)
     if decision == "fired":
-        threading.Thread(target=escalate, args=(grab_frames,),
+        threading.Thread(target=escalate,
+                         args=(escalate_grab or grab_frames,),
                          kwargs={"log": log}, daemon=True).start()
     return decision

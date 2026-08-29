@@ -306,6 +306,24 @@ def _close_buffers():
     segments.stop_all()
 
 
+def _fresh_burst(n):
+    """n fresh frames from the newest readable outside segment, newest last.
+
+    Shared with the patrol so both escalation loops judge the same picture.
+    Imported lazily: patrol.py sets up sys.path/cwd at import and the server
+    must not pay that at startup or fail to start if the patrol file is
+    missing -- in that case escalation falls back to stopping after one sound
+    (no frames -> "stopping").
+    """
+    try:
+        import patrol
+        return patrol.burst_frames(n)
+    except Exception as exc:
+        print(f"  fresh burst unavailable ({exc}) -- escalation will stop",
+              flush=True)
+        return []
+
+
 # Find the animal first, then ask what colour it is. The motion path is kept
 # underneath: it still feeds the background model, still fills the diagnostic
 # columns in events.csv, and still decides if the model file is missing.
@@ -628,7 +646,14 @@ async def motion(request: Request, image: UploadFile | None = None,
                 # seconds ago, and would make deter's "at the flap RIGHT NOW"
                 # check look at the oldest detections instead of the newest.
                 lambda n, fr=frames: fr[-n:],
-                log=lambda m: print(m, flush=True))
+                log=lambda m: print(m, flush=True),
+                # The repeat loop must look at the patio NOW, not at the
+                # burst above: that closure returns the same frames every
+                # call, so escalation could never see the cat leave or reach
+                # the flap -- on 2026-08-29 02:56 it played five sounds at a
+                # cat in the flap zone. patrol.burst_frames re-decodes the
+                # tail of the newest segment on each call.
+                escalate_grab=_fresh_burst)
             if decision == "fired":
                 # 35s of copying -- never block the request handler.
                 threading.Thread(target=deter.capture_reaction,
