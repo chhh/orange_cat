@@ -1,10 +1,13 @@
-# What is live right now — 2026-08-28 09:05
+# What is live right now — 2026-08-29 08:55
 
 Read this before changing anything. **The deterrent is armed and will fire
 tonight without anyone starting it.** Dave's standing rule: no sound through
 the camera speakers — tests included — unless Dave has warned Dima first.
 
-## What changed today (independent review + fixes, commits 4273da1, f912148)
+## Night of 08-28/29: three visits, three on-target fires -- see memory
+`night-0829-sound-does-not-deter` and `watch/REVIEW-2026-08-28-independent.md`.
+
+## What changed 08-28 (independent review + fixes, commits 4273da1, f912148, 94c57d5)
 
 - `~/ocp-watch/deter.py`, `patrol.py`, `start-patrol.sh`, `overnight-report.sh`,
   `LIVE-STATE.md` are now **symlinks into `~/projects/ocp`** (`deter.py`,
@@ -32,9 +35,9 @@ the camera speakers — tests included — unless Dave has warned Dima first.
 
     patrol        pid 886096 (started 08:57:58), DETER_ARM=1, HA token in env,
                   sampling every 2s inside 22:00-06:00; cron restarts it if it dies
-    ocp-detector  systemd, started 22:09 on 08-27, deterrent hooked in
-                  (server.py path unchanged today; it rarely sees the stray --
-                  Dima's Pi hang starves the HA automation)
+    ocp-detector  systemd, restarted 08:54 on 08-29 with the escalation fix
+                  (94c57d5): repeats now judge FRESH frames. HA path delivers
+                  in ~7s since Dima disabled cat_motion_rpi on 08-28.
     soundserver   `python -m http.server 8081` in ~/projects/ocp/sounds/,
                   pid 574231 -- HA fetches the sounds FROM here over the tunnel
     wg-quick@wg0  the tunnel
