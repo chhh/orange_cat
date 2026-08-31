@@ -59,12 +59,11 @@ distinct instant per ~5s and the full chain was 3.5-8s. Hence:
 
 ## Running, and surviving this session
 
-    patrol        pid 2656390 (restarted 09:37 08-31 on the live-stream loop),
+    patrol        pid 2658847 (restarted 09:52 08-31: live-stream loop + N4),
                   DETER_ARM=1, HA token in env; live RTSP at 0.33s cadence
                   21:45-06:00, segment poll at 30s otherwise; cron restarts it
-    ocp-detector  systemd, restarted 08:54 on 08-29 with the escalation fix
-                  (94c57d5): repeats now judge FRESH frames. HA path delivers
-                  in ~7s since Dima disabled cat_motion_rpi on 08-28.
+    ocp-detector  systemd, restarted 09:56 08-31 with the N4 deter. HA path
+                  delivers in ~7s since Dima disabled cat_motion_rpi on 08-28.
     soundserver   `python -m http.server 8081` in ~/projects/ocp/sounds/,
                   pid 574231 -- HA fetches the sounds FROM here over the tunnel
     wg-quick@wg0  the tunnel
@@ -122,20 +121,17 @@ The patrol is unaffected. One line on his side: `--max-time 5`. See
 - Replayed: 08-31 entry still fires mid-patio; 08-31 and 08-28 exits are now
   "no fire"; the 08-29 approach (the fire that turned the cat away) still
   fires. Patrol restarted 09:52 on this code.
-- **ocp-detector still runs the OLD deter.py** until
-  `sudo systemctl restart ocp-detector` -- and with the patrol no longer
-  claiming the cooldown on exits, the un-restarted server is MORE likely to
-  fire on one. Restart it before tonight.
+- ocp-detector restarted 09:56 08-31 (Dave ran the sudo) -- both processes
+  now run the N4 deter.
 - Correction from Dave: last night the stray did NOT come in from the gate --
   it came in from the side, quickly. N2 must fire on first sight anywhere in
   the open, not on a gate zone.
 
 ## Next (from REVIEW-2026-08-31, in order; N1+N4 done 08-31)
 
-1. `sudo systemctl restart ocp-detector` (loads N4 into server.py).
-2. N2: fire on first sight in the open (NOT a gate zone -- see correction).
-3. N3: sound chain under ~1.5s (stage WAVs in HA config/www).
-4. N5: acceptance bar in evaluate_deter (sound in air <=2.5s after gate
+1. N2: fire on first sight in the open (NOT a gate zone -- see correction).
+2. N3: sound chain under ~1.5s (stage WAVs in HA config/www).
+3. N5: acceptance bar in evaluate_deter (sound in air <=2.5s after gate
    appearance on the 023323 burst) before changing any gate.
-5. N6: ask Dima about food-at-night; keep the visits/entries scorecard.
-6. D6 person-suppression fix before any water hardware.
+4. N6: ask Dima about food-at-night; keep the visits/entries scorecard.
+5. D6 person-suppression fix before any water hardware.
