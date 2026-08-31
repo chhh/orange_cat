@@ -188,12 +188,14 @@ def score_burst(frames):
             continue
         # Ask about people directly: best_box() hides a lone person by
         # returning None, and that is how a person reaches a cat verdict.
+        # ONE detect() call serves both questions -- the second inference per
+        # frame was pure duplication and doubled the decision cost.
         raw = animal.detect(f, want_person=True)
         if any(d["cls"] == animal.PERSON_CLASS for d in raw):
             people += 1
             verdicts.append("person")
             continue
-        box = animal.best_box(f, check_people=True)
+        box = animal.best_box_from(raw, f.shape)
         if box is None:
             verdicts.append("no_animal")
             continue

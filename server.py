@@ -345,8 +345,22 @@ def score_frame(frame, camera):
             ir_feat = detect.ir_features(frame, mask, camera)
 
     if USE_DETECTOR and animal.available():
-        found = animal.best_box(frame)
+        # One detect() call answers both questions. Asking via best_box alone
+        # was the person-suppression gap (D6): a person ALONE in frame made
+        # best_box return None, the frame was recorded "no_animal", and the
+        # burst-level person rule below never saw the sighting -- so one weak
+        # animal box elsewhere in the burst could still win orange_cat
+        # (event 20260818-215515-948, labelled person, scored orange_cat 1.0).
+        dets = animal.detect(frame, want_person=True)
+        people = [d for d in dets if d["cls"] == animal.PERSON_CLASS]
+        found = animal.best_box_from(dets, frame.shape)
         if found is None:
+            if people:
+                # "person" is not in detect.DECISIVE, so it abstains from the
+                # vote -- but it now REACHES the burst rule, which is the fix.
+                return ("person",
+                        "person alone in frame -- refusing to classify",
+                        stats, {**info, "det_conf": people[0]["conf"]}, ir_feat)
             # Abstain rather than vote. On a real raid the detector fired on
             # as few as 1 of 15 frames, so treating "no detection" as
             # evidence of absence would drown every true positive in its own
