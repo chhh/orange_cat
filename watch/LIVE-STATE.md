@@ -142,6 +142,24 @@ The patrol is unaffected. One line on his side: `--max-time 5`. See
   sight -> menacing opener, closing -> startle sequence); check HA
   volume_set on the speaker for distance-scaled volume.
 
+## What changed 08-31, fourth pass (hygiene sweep, commit 956e4ab)
+
+- Watchdogs for tonight (Claude-session-bound: die with the session): a
+  patrol.log monitor (fires/exits/BLIND/WEDGED/errors) and a 22:05 went-hot
+  check.
+- Overnight report scopes to a NIGHT WINDOW START marker (21:00 cron stamps
+  both logs); opens with a scorecard (pre-entry fires / exit visits = missed
+  entries / holds); shows stream state. 07:10 cron prunes frames/events >14d.
+- One YOLO pass per deterrent frame (animal.best_box_from) -- decision cost
+  halved; replay decision-identical.
+- D6 FIXED: server.score_frame reports a lone person as "person"; the burst
+  rule now works as documented. Found live: 20260830-123217-002 (person,
+  12:32) had scored orange_cat 1.0; now suppresses to person. Stray bursts
+  unchanged. Patrol restarted 15:34 on all of this; detector restart pending
+  Dave's sudo.
+- Speaker media_player.nursery_speaker_2 SUPPORTS volume_set (now at 1.0) --
+  distance-scaled volume is available for the graded sequence.
+
 ## Next (from REVIEW-2026-08-31, in order; N1+N4 done 08-31)
 
 1. N2: fire on first sight in the open (NOT a gate zone -- see correction).
