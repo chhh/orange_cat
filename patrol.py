@@ -18,6 +18,16 @@ Two rate limits live here and they must stay separate:
 
 The per-frame logic is in classify_frame() so evaluate_deter.py can replay it
 over recorded video with the same code the live loop runs.
+
+FRAME SOURCE (since 2026-08-31). Inside the arming window the patrol holds the
+outside RTSP stream open (streamer.py) and judges frames ~0.3-1.0s old at
+~3/s. The segment-tail path below remains as the fallback and the
+outside-window mode. Why: on 08-31 at 02:33 the stray crossed gate-to-flap in
+~4s. The segment path sees one DISTINCT instant per ~5s (it re-reads the same
+closed-segment tail until the next segment closes) at 0.6-5.6s stale -- the
+whole crossing fit inside one hole, and the first orange verdict was a cat
+already at the flap, where the welfare gate rightly holds. See
+REVIEW-2026-08-31.md.
 """
 import os, sys, glob, subprocess, time, tempfile
 sys.path.insert(0, "/home/david/projects/ocp")
@@ -28,10 +38,20 @@ try:
 except Exception as _e:          # never let the deterrent break detection
     deter = None
     print(f"deterrent unavailable: {_e}", flush=True)
-from capture import measure
+from capture import measure, stream_url
+import streamer
 
 CAM = "outside"
 SAVE = "/home/david/ocp-watch/patrol"
+
+# Cadence. HOT is the arming window: the cat has crossed the patio in ~4s, so
+# the gap between judged frames must be a fraction of that. COLD (daytime) is
+# the old 30s poll of the segment buffer -- no reason to decode video all day.
+HOT_INTERVAL = float(os.getenv("PATROL_HOT_INTERVAL", "0.33"))
+COLD_INTERVAL = float(os.getenv("PATROL_COLD_INTERVAL", "30"))
+PREWARM = 900.0        # open the stream this long before the window, seconds
+STALE_BLIND = 3.0      # buffer older than this = blind; fall back and say so
+STALE_WEDGED = 30.0    # reader thread wedged; abandon it and open a new one
 
 
 def burst_frames(n):
@@ -196,20 +216,121 @@ class ChangeLogger:
             print(msg, flush=True)
 
 
+def _near_window(now=None):
+    """In the arming window, or within PREWARM seconds of it opening."""
+    if deter is None:
+        return False
+    if deter._in_window(now):
+        return True
+    lt = time.localtime(now or time.time())
+    secs = lt.tm_hour * 3600 + lt.tm_min * 60 + lt.tm_sec
+    return (deter.HOUR_FROM * 3600 - secs) % 86400 <= PREWARM
+
+
+class FrameSource:
+    """The patrol's view of the camera: a live RTSP buffer when hot, the
+    segment tail otherwise -- and never silent about which one it is using.
+
+    States: cold (daytime, segment poll), hot (live buffer, fresh), blind
+    (should be hot but the buffer is stale -- fall back to the segment tail
+    and SAY SO; a quiet fallback would look like a healthy night and hide that
+    we are back to 5s holes).
+    """
+
+    def __init__(self):
+        self.stream = None
+        self.state = "cold"
+
+    def _say(self, state, extra=""):
+        if state != self.state:
+            self.state = state
+            print(f"{time.strftime('%H:%M:%S')} patrol stream {state.upper()}"
+                  f"{': ' + extra if extra else ''}", flush=True)
+
+    def _fresh(self):
+        age = self.stream.frame_age() if self.stream else None
+        return age is not None and age <= STALE_BLIND and \
+            bool(self.stream.buf)
+
+    def tick(self):
+        """Reconcile the stream with the clock. Call once per cycle."""
+        if _near_window():
+            if self.stream is None:
+                try:
+                    self.stream = streamer.Streamer(CAM, stream_url(CAM)).start()
+                    print(f"{time.strftime('%H:%M:%S')} patrol opening live "
+                          f"stream for the arming window", flush=True)
+                except Exception as e:
+                    print(f"{time.strftime('%H:%M:%S')} patrol stream open "
+                          f"failed ({e}) -- staying on segment tail", flush=True)
+            elif (self.stream.frame_age() or 0) > STALE_WEDGED:
+                # A wedged reader looks alive and delivers nothing. Abandon it
+                # (daemon thread) and open a fresh connection.
+                print(f"{time.strftime('%H:%M:%S')} patrol stream WEDGED "
+                      f"(no frame for {self.stream.frame_age():.0f}s) -- "
+                      f"abandoning reader and reconnecting", flush=True)
+                try:
+                    self.stream._stop.set()
+                except Exception:
+                    pass
+                try:
+                    self.stream = streamer.Streamer(CAM, stream_url(CAM)).start()
+                except Exception as e:
+                    self.stream = None
+                    print(f"  reconnect failed: {e}", flush=True)
+        elif self.stream is not None:
+            print(f"{time.strftime('%H:%M:%S')} patrol closing live stream "
+                  f"(outside the window)", flush=True)
+            try:
+                self.stream.stop()
+            except Exception:
+                pass
+            self.stream = None
+            self._say("cold")
+
+    def frame(self):
+        """(frame, age_seconds_or_None). Age None = segment path, ~0.6-5.6s."""
+        if self.stream is not None and self._fresh():
+            self._say("hot", f"frame age {self.stream.frame_age():.1f}s")
+            got = self.stream.latest(1)
+            if got:
+                return got[0], self.stream.frame_age()
+        if self.stream is not None:
+            age = self.stream.frame_age()
+            self._say("blind", f"buffer {'empty' if age is None else f'{age:.0f}s stale'}"
+                      " -- falling back to segment tail")
+        return newest_frame(), None
+
+    def grab(self, n):
+        """Burst for deter: instant and fresh when hot, segment decode when
+        not. deter needs time-ordered frames, newest last, spanning ~2s."""
+        if self.stream is not None and self._fresh():
+            frames = self.stream.latest(n, span=2.0)
+            if frames:
+                return frames
+        return burst_frames(n)
+
+    def hot(self):
+        return self.stream is not None and self._fresh()
+
+
 def main():
     os.makedirs(SAVE, exist_ok=True)
-    print(f"patrol armed {time.strftime('%H:%M:%S')}: YOLO on {CAM}, 2s in the "
-          f"deterrent window / 30s outside, detector_available={animal.available()}",
-          flush=True)
+    print(f"patrol armed {time.strftime('%H:%M:%S')}: YOLO on {CAM}, live "
+          f"stream at {HOT_INTERVAL}s in the deterrent window (+{PREWARM/60:.0f}min "
+          f"prewarm) / segment tail at {COLD_INTERVAL}s outside, "
+          f"detector_available={animal.available()}", flush=True)
     rep = Reporter()
     dlog = ChangeLogger()
+    src = FrameSource()
     last_beat = time.time()
     n_frames = n_det = 0
     last_decision = None
 
     while True:
         try:
-            f = newest_frame()
+            src.tick()
+            f, age = src.frame()
             if f is not None:
                 n_frames += 1
                 box, verdict, reasoning, info = classify_frame(f)
@@ -221,18 +342,19 @@ def main():
                         path = f"{SAVE}/patrol-{ts}.jpg"
                         cv2.imwrite(path, f)
                         print(f"{time.strftime('%H:%M:%S')} "
-                              f"{describe(box, verdict, reasoning, info, path)}",
+                              f"{describe(box, verdict, reasoning, info, path)}"
+                              f"{f' [frame age {age:.1f}s]' if age is not None else ''}",
                               flush=True)
 
                     # The deterrent is asked on EVERY orange frame, reported or
                     # not. A single patrol frame is the false-positive
                     # signature, so deter pulls a real burst and votes; a hold
-                    # (too_far / at_flap) is re-checked next cycle, 2s later,
-                    # instead of after the 120s report gap.
+                    # (too_far / at_flap) is re-checked next cycle instead of
+                    # after the 120s report gap.
                     if verdict == "orange_cat" and deter is not None:
                         try:
                             decision = deter.consider_and_escalate(
-                                burst_frames, log=dlog)
+                                src.grab, log=dlog)
                             if decision != last_decision:
                                 print(f"{time.strftime('%H:%M:%S')} deterrent "
                                       f"decision: {decision}", flush=True)
@@ -247,18 +369,23 @@ def main():
                     dlog.last = None
             if time.time() - last_beat >= HEARTBEAT:
                 last_beat = time.time()
+                s = src.stream.status() if src.stream else None
+                extra = (f" stream={src.state} age="
+                         f"{'-' if s is None or s['seconds_since_frame'] is None else s['seconds_since_frame']}s"
+                         f" reconnects={s['reconnects'] if s else '-'}")
                 print(f"{time.strftime('%H:%M:%S')} patrol heartbeat: "
                       f"{n_frames} frames sampled, {n_det} detections "
-                      f"({rep.n_suppressed} reports suppressed). "
+                      f"({rep.n_suppressed} reports suppressed).{extra} "
                       f"Absence of these lines means the patrol died.", flush=True)
         except Exception as e:
             print(f"{time.strftime('%H:%M:%S')} patrol error: {e}", flush=True)
-        # 2s inside the window: the cat crosses the patio in about 3 seconds.
-        # A cycle costs ~0.3s, plus ~0.5s when the deterrent is consulted.
+        # Hot reads are free (in-memory); the blind fallback spawns an ffmpeg
+        # per frame, so pace it at the old 2s rather than spinning at 0.33s.
         try:
-            time.sleep(2 if (deter is not None and deter._in_window()) else 30)
+            time.sleep(HOT_INTERVAL if src.hot() else
+                       (2.0 if _near_window() else COLD_INTERVAL))
         except Exception:
-            time.sleep(30)
+            time.sleep(COLD_INTERVAL)
 
 
 if __name__ == "__main__":

@@ -19,9 +19,17 @@ capture loop. Frames are only blended in when little is moving, so a cat
 loitering by the door does not slowly become part of the scenery.
 """
 
+import os
 import threading
 import time
 from collections import deque
+
+# A long-held RTSP handle tends to wedge (see capture.py): cap.read() can block
+# forever instead of returning False, and the reader thread then looks alive
+# while delivering nothing. A socket timeout turns the wedge into a failed read
+# so the reconnect loop actually runs. Must be set before cv2 opens a capture.
+os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS",
+                      "rtsp_transport;tcp|stimeout;5000000")
 
 import cv2
 
@@ -99,7 +107,7 @@ class Streamer:
 
                 if counter % KEEP_EVERY == 0:
                     with self.lock:
-                        self.buf.append(frame)
+                        self.buf.append((self.last_frame_at, frame))
 
                 now = time.time()
                 if now >= next_bg:
@@ -131,13 +139,42 @@ class Streamer:
         away and easier to measure.
         """
         with self.lock:
-            frames = list(self.buf)
+            frames = [f for _, f in self.buf]
         if not frames:
             return []
         if len(frames) <= count:
             return frames
         step = len(frames) / count
         return [frames[min(int(i * step), len(frames) - 1)] for i in range(count)]
+
+    def latest(self, count=6, span=2.0):
+        """The newest `count` frames, oldest first, spread over up to `span`
+        seconds of the buffer's tail.
+
+        This is the deterrent's grabber: deter judges "where is the cat RIGHT
+        NOW" on the last frames of what it is given, and derives approach
+        geometry from first-vs-last, so it wants a short, genuinely fresh,
+        time-ordered window -- not the whole buffer.
+        """
+        with self.lock:
+            items = list(self.buf)
+        if not items:
+            return []
+        newest = items[-1][0]
+        window = [f for t, f in items if newest - t <= span]
+        if len(window) <= count:
+            return window
+        step = len(window) / count
+        picked = [window[min(int(i * step), len(window) - 1)]
+                  for i in range(count - 1)]
+        picked.append(window[-1])       # the newest frame is never sampled away
+        return picked
+
+    def frame_age(self):
+        """Seconds since the newest buffered frame, or None if empty/dead."""
+        if self.last_frame_at is None:
+            return None
+        return time.time() - self.last_frame_at
 
     def status(self):
         with self.lock:

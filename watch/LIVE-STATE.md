@@ -1,8 +1,34 @@
-# What is live right now — 2026-08-29 08:55
+# What is live right now — 2026-08-31 09:45
 
 Read this before changing anything. **The deterrent is armed and will fire
 tonight without anyone starting it.** Dave's standing rule: no sound through
 the camera speakers — tests included — unless Dave has warned Dima first.
+
+## Night of 08-30/31: FIRST ENTRY under the armed system -- see
+`watch/REVIEW-2026-08-31-night.md`. The stray crossed gate-to-flap in ~4s at
+02:33; first orange verdict was already at the flap (correct hold); it ate 16
+min; the only fire was on the exit. No bug -- the segment-tail patrol sees one
+distinct instant per ~5s and the full chain was 3.5-8s. Hence:
+
+## What changed 08-31 (N1 from the review: continuous low-latency loop)
+
+- **patrol.py now holds the outside RTSP stream open in the arming window**
+  (`streamer.py`, previously unused). Measured live: frame age 0.12-0.3s (was
+  0.6-5.6s), ~5.6 fps buffered, deter's burst grab is instant (was a ~1.3s
+  re-decode), classify 0.19s/frame at a 0.33s cadence. Chain is now ~2.1s
+  trigger-to-air (was 3.5-8s).
+- The stream opens at 21:45 (15 min prewarm), closes at 06:00; daytime is the
+  old 30s segment poll. If the buffer goes stale the patrol logs
+  `patrol stream BLIND` and falls back to the segment tail -- worst case IS
+  the old behaviour, but say-so is in the log. A wedged RTSP read (socket
+  timeout now set) is abandoned and reconnected, logged `WEDGED`.
+- Replayed 08-31 02:33 entry at the new latency (`evaluate_deter.py
+  frames/events/outside-20260831-023323-013/ --stale 0.7 --interval 0.5`):
+  fires on the closing rule ~1.7s after gate appearance, sound lands
+  mid-patio (h=31%, not at flap) -- the shot that did not exist last night.
+  Exit replay: still holds while in the flap, fires only clear of it.
+- Gates are UNCHANGED in this step. Next per the review: N2 (fire on first
+  sight at the gate), N3 (sound chain <1.5s), N4 (stop exit fires).
 
 ## Night of 08-28/29: three visits, three on-target fires -- see memory
 `night-0829-sound-does-not-deter` and `watch/REVIEW-2026-08-28-independent.md`.
@@ -33,8 +59,9 @@ the camera speakers — tests included — unless Dave has warned Dima first.
 
 ## Running, and surviving this session
 
-    patrol        pid 886096 (started 08:57:58), DETER_ARM=1, HA token in env,
-                  sampling every 2s inside 22:00-06:00; cron restarts it if it dies
+    patrol        pid 2656390 (restarted 09:37 08-31 on the live-stream loop),
+                  DETER_ARM=1, HA token in env; live RTSP at 0.33s cadence
+                  21:45-06:00, segment poll at 30s otherwise; cron restarts it
     ocp-detector  systemd, restarted 08:54 on 08-29 with the escalation fix
                   (94c57d5): repeats now judge FRESH frames. HA path delivers
                   in ~7s since Dima disabled cat_motion_rpi on 08-28.
@@ -85,8 +112,12 @@ starves his `mode: single` automation, so `server.py` receives almost nothing.
 The patrol is unaffected. One line on his side: `--max-time 5`. See
 `memory/rpi-command-blocks-delivery.md`.
 
-## Next (from the review, in order)
+## Next (from REVIEW-2026-08-31, in order; N1 done 08-31)
 
-1. R2: one continuous loop on a held-open RTSP stream (frame age ~0.7s).
-2. R3: fire on arrival in the open. (Inside-camera sound is ruled out -- family sleeps nearby.)
-3. D6 person-suppression fix before any water hardware.
+1. N4: stop firing on exits (capture-and-log only).
+2. N2: fire on first sight at the gate choke point.
+3. N3: sound chain under ~1.5s (stage WAVs in HA config/www).
+4. N5: acceptance bar in evaluate_deter (sound in air <=2.5s after gate
+   appearance on the 023323 burst) before changing any gate.
+5. N6: ask Dima about food-at-night; keep the visits/entries scorecard.
+6. D6 person-suppression fix before any water hardware.
