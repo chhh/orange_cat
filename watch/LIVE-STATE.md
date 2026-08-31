@@ -127,6 +127,21 @@ The patrol is unaffected. One line on his side: `--max-time 5`. See
   it came in from the side, quickly. N2 must fire on first sight anywhere in
   the open, not on a gate zone.
 
+## What changed 08-31, third pass (half-step flap gate, Dave's call)
+
+- A cat standing AT the flap (body outside) is now a target for the first
+  sound and for escalation repeats -- the back-out-and-run experiment. Only
+  >=50% of the visible box inside the flap zone (`DETER_FLAP_COMMIT`) holds
+  fire, logged `in_flap`. Exits still never fire (visit-origin rule; replays
+  confirm both recorded exits stay silent). Commit 3b7faa0.
+- Patrol restarted 10:29, ocp-detector 10:37 (Dave's sudo) -- both on this.
+- Sound screening: 13 candidates (freesound previews) for a distance-graded
+  threat sequence are with Dave -- audition page (artifact
+  "Deterrent Sound Auditions"), originals in ~/ocp-watch/sound-candidates/.
+  Dave is keeping Dima informed. On verdicts: wire keepers + N2 (far first
+  sight -> menacing opener, closing -> startle sequence); check HA
+  volume_set on the speaker for distance-scaled volume.
+
 ## Next (from REVIEW-2026-08-31, in order; N1+N4 done 08-31)
 
 1. N2: fire on first sight in the open (NOT a gate zone -- see correction).
