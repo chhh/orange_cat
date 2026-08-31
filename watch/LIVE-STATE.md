@@ -166,5 +166,16 @@ The patrol is unaffected. One line on his side: `--max-time 5`. See
 2. N3: sound chain under ~1.5s (stage WAVs in HA config/www).
 3. N5: acceptance bar in evaluate_deter (sound in air <=2.5s after gate
    appearance on the 023323 burst) before changing any gate.
-4. N6: ask Dima about food-at-night; keep the visits/entries scorecard.
-5. D6 person-suppression fix before any water hardware.
+4. N6 scorecard: keep counting visits / entries / pre-entry fires nightly.
+5. D6 person-suppression fix -- DONE 08-31 (commit 956e4ab).
+
+## Settled questions (do not re-raise)
+
+- **Food at night: STAYS OUT (Dima, via Dave 2026-08-31).** The resident
+  cats eat overnight, and that is what keeps them from waking Dima too
+  early -- which is also the actual harm when the stray eats it: the
+  residents go hungry and wake him. So the reward cannot be removed; the
+  deterrent must win BEFORE entry. (Closes R6 from the 08-28 review and
+  N6's open question from 08-31.)
+- Microchip flap route: settled earlier, not pursued.
+- Inside-camera sound: ruled out 08-28, family sleeps nearby.
