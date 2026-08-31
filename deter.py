@@ -80,6 +80,50 @@ ARMED = os.getenv("DETER_ARM", "0") in ("1", "true", "yes")
 # process the same clock.
 COOLDOWN_FILE = os.getenv("DETER_COOLDOWN_FILE", "/home/david/ocp-watch/.deter-last-fire")
 
+# EXITS ARE NOT TARGETS (N4, REVIEW-2026-08-31). Three of the four fires up to
+# 08-31 hit a fed cat leaving: the reward was collected minutes earlier, so
+# the sound cannot deter -- it wakes the street at 3am and actively teaches
+# the cat that the noise is harmless (habituation is the failure mode that
+# ends the acoustic approach). So consider() tracks the VISIT: a chain of
+# orange sightings less than VISIT_GAP apart, with the origin fixed by the
+# first framed detection of the chain. Origin at the flap = the cat emerged
+# from the door = exiting: suppress every fire for the rest of that visit.
+# Origin in the open = an approach: nothing changes. A meal longer than
+# VISIT_GAP splits entry and exit into separate visits, which is exactly what
+# makes the exit recognisable by where it began. Shared through a file for
+# the same reason the cooldown is.
+VISIT_FILE = os.getenv("DETER_VISIT_FILE", "/home/david/ocp-watch/.deter-visit")
+VISIT_GAP = float(os.getenv("DETER_VISIT_GAP", "120"))
+
+
+def _visit_update(flap_seq, verdict, now=None):
+    """Record this sighting; return the visit's origin ('flap' or 'open').
+
+    Only a burst that actually votes orange_cat may touch the state: a
+    resident using the flap must not mark a visit that then suppresses a real
+    approach seconds later.
+    """
+    if verdict != "orange_cat" or not flap_seq:
+        return None
+    import json
+    now = time.time() if now is None else now
+    origin = None
+    try:
+        with open(VISIT_FILE) as fh:
+            st = json.load(fh)
+        if now - float(st.get("last_seen", 0)) <= VISIT_GAP:
+            origin = st.get("origin")
+    except (OSError, ValueError):
+        pass
+    if origin not in ("flap", "open"):
+        origin = "flap" if flap_seq[0] else "open"
+    try:
+        with open(VISIT_FILE, "w") as fh:
+            json.dump({"last_seen": now, "origin": origin}, fh)
+    except OSError:
+        pass
+    return origin
+
 
 def _last_fire_at():
     try:
@@ -181,6 +225,7 @@ def consider(grab_frames, log=_flush_print):
     orange = tally.get("orange_cat", 0)
     detail = (f"burst={len(frames)} orange={orange} "
               f"people_frames={people} at_flap={at_flap} tally={tally}")
+    origin = _visit_update(flap_seq, verdict)
 
     if people:
         log(f"  deterrent: PERSON in {people} of {len(frames)} burst frames "
@@ -201,6 +246,12 @@ def consider(grab_frames, log=_flush_print):
             f"detections -- standing down. A cat part-way through could bolt "
             f"back inside. {detail}")
         return "at_flap"
+    if origin == "flap":
+        log(f"  deterrent: EXITING -- this visit was first seen at the flap, "
+            f"so the cat came OUT of the door with the meal already eaten. A "
+            f"sound now cannot deter and only teaches it the noise is "
+            f"harmless -- standing down. {detail}")
+        return "exiting"
     if geom:
         height = geom[-1][1]
         # "Closing" must not assume a direction. x0 falling only detects an

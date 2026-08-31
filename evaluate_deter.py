@@ -29,6 +29,8 @@ import time
 os.environ["DETER_ARM"] = "0"
 os.environ["DETER_COOLDOWN_FILE"] = os.path.join(tempfile.gettempdir(),
                                                   "evaluate-deter-cooldown")
+os.environ["DETER_VISIT_FILE"] = os.path.join(tempfile.gettempdir(),
+                                               "evaluate-deter-visit")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import cv2
@@ -130,9 +132,20 @@ class SimClock:
         deter._last_fire_at = lambda: time.time() - (self.now - self.last_fire)
         deter._mark_fired = lambda when=None: setattr(self, "last_fire", self.now)
         deter._in_window = lambda now=None: True
+        # Wrap the ORIGINAL, not whatever a previous clip's install left here.
+        if not hasattr(deter, "_visit_update_orig"):
+            deter._visit_update_orig = deter._visit_update
+        deter._visit_update = (lambda fs, v, now=None:
+                               deter._visit_update_orig(fs, v, now=self.now))
 
 
 def run(path, stale, interval, sound_latency, legacy_gap, quiet=False):
+    # Each clip is its own visit: stale state from the previous clip would
+    # mark an approach as an exit (or vice versa).
+    try:
+        os.unlink(os.environ["DETER_VISIT_FILE"])
+    except OSError:
+        pass
     name = os.path.splitext(os.path.basename(path.rstrip("/")))[0]
     t0 = parse_hms(CLIP_START.get(name, "00:00:00"))
     frames = decode(path)

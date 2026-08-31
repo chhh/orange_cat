@@ -112,10 +112,28 @@ starves his `mode: single` automation, so `server.py` receives almost nothing.
 The patrol is unaffected. One line on his side: `--max-time 5`. See
 `memory/rpi-command-blocks-delivery.md`.
 
-## Next (from REVIEW-2026-08-31, in order; N1 done 08-31)
+## What changed 08-31, second pass (N4: exits are not targets)
 
-1. N4: stop firing on exits (capture-and-log only).
-2. N2: fire on first sight at the gate choke point.
+- `deter.consider` now tracks the VISIT (shared file `.deter-visit`, 120s
+  chain gap): a visit whose FIRST framed detection is at the flap means the
+  cat came out of the door -- it returns `exiting` and never fires. A visit
+  first seen in the open is an approach; nothing changed there. Only
+  orange-voted bursts touch the state, so residents cannot poison it.
+- Replayed: 08-31 entry still fires mid-patio; 08-31 and 08-28 exits are now
+  "no fire"; the 08-29 approach (the fire that turned the cat away) still
+  fires. Patrol restarted 09:52 on this code.
+- **ocp-detector still runs the OLD deter.py** until
+  `sudo systemctl restart ocp-detector` -- and with the patrol no longer
+  claiming the cooldown on exits, the un-restarted server is MORE likely to
+  fire on one. Restart it before tonight.
+- Correction from Dave: last night the stray did NOT come in from the gate --
+  it came in from the side, quickly. N2 must fire on first sight anywhere in
+  the open, not on a gate zone.
+
+## Next (from REVIEW-2026-08-31, in order; N1+N4 done 08-31)
+
+1. `sudo systemctl restart ocp-detector` (loads N4 into server.py).
+2. N2: fire on first sight in the open (NOT a gate zone -- see correction).
 3. N3: sound chain under ~1.5s (stage WAVs in HA config/www).
 4. N5: acceptance bar in evaluate_deter (sound in air <=2.5s after gate
    appearance on the 023323 burst) before changing any gate.
