@@ -153,6 +153,26 @@ def _overlaps(box, zone):
     return not (ax1 < bx0 or ax0 > bx1 or ay1 < by0 or ay0 > by1)
 
 
+# HALF-STEP FLAP GATE (Dave, 2026-08-31). The original rule held on ANY
+# overlap with the flap zone, so a cat standing AT the door -- body outside,
+# deciding -- was never fired at, and the "would it back out?" experiment
+# never ran. Dave: this cat is not a panicker; fire while it is AT the flap,
+# hold only when it is substantially THROUGH it (a startle mid-opening could
+# still hurt it or chase it inside). "Through" = the visible box is mostly
+# inside the zone; standing at it, most of the body shows outside.
+FLAP_COMMIT = float(os.getenv("DETER_FLAP_COMMIT", "0.5"))
+
+
+def _overlap_frac(box, zone):
+    """Fraction of the animal box inside the zone -- how far INTO the flap it
+    is, not merely whether it is near it."""
+    ax0, ay0, ax1, ay1 = box
+    bx0, by0, bx1, by1 = zone
+    ix = max(0, min(ax1, bx1) - max(ax0, bx0))
+    iy = max(0, min(ay1, by1) - max(ay0, by0))
+    return ix * iy / max(1, (ax1 - ax0) * (ay1 - ay0))
+
+
 def score_burst(frames):
     """Vote a burst the way server.py does.
 
@@ -161,6 +181,7 @@ def score_burst(frames):
     """
     verdicts, people, at_flap, boxed = [], 0, 0, 0
     flap_seq = []          # per-framed-detection: was it at the flap?
+    commit_seq = []        # per-framed-detection: fraction of the box IN it
     geom = []              # (x0, area_pct) per framed detection, in time order
     for f in frames:
         if f is None:
@@ -186,6 +207,7 @@ def score_burst(frames):
         geom.append((_x0, 100.0 * (_y1 - _y0) / _h))   # (x0, height % of frame)
         near = _overlaps(box["box"], FLAP_ZONE)
         flap_seq.append(near)
+        commit_seq.append(_overlap_frac(box["box"], FLAP_ZONE))
         if near:
             at_flap += 1
         try:
@@ -201,7 +223,7 @@ def score_burst(frames):
             v = "unmeasurable"
         verdicts.append(v)
     verdict, _, tally = detect.vote(verdicts)
-    return verdict, tally, people, at_flap, boxed, flap_seq, geom
+    return verdict, tally, people, at_flap, boxed, flap_seq, commit_seq, geom
 
 
 def _flush_print(msg):
@@ -221,7 +243,8 @@ def consider(grab_frames, log=_flush_print):
         log("  deterrent: no burst frames available -- standing down")
         return "no_frames"
 
-    verdict, tally, people, at_flap, boxed, flap_seq, geom = score_burst(frames)
+    verdict, tally, people, at_flap, boxed, flap_seq, commit_seq, geom = \
+        score_burst(frames)
     orange = tally.get("orange_cat", 0)
     detail = (f"burst={len(frames)} orange={orange} "
               f"people_frames={people} at_flap={at_flap} tally={tally}")
@@ -232,15 +255,16 @@ def consider(grab_frames, log=_flush_print):
             f"-- standing down. {detail}")
         return "person"
     # WHERE THE CAT IS NOW is what matters -- the sound lands in the future,
-    # so a burst-wide majority is the wrong test. On the 02:59 arrival the cat
-    # was at the flap in the last 2 frames of 13; a majority test said "fire"
-    # while it was standing at the door. Judge on the most recent detections.
-    recent = flap_seq[-FLAP_RECENT:] if flap_seq else []
-    if recent and any(recent):
-        log(f"  deterrent: cat at the flap in the latest {len(recent)} "
-            f"detection(s) -- standing down; it must not be startled into or "
-            f"out of the opening. {detail}")
-        return "at_flap"
+    # so a burst-wide majority is the wrong test. Judge the most recent
+    # detections. Since 08-31 (half-step, Dave's call): a cat merely AT the
+    # flap is a legitimate target -- the hope is that it backs out and runs --
+    # and only a cat substantially THROUGH the opening holds the fire.
+    recent = commit_seq[-FLAP_RECENT:] if commit_seq else []
+    if recent and any(c >= FLAP_COMMIT for c in recent):
+        log(f"  deterrent: cat is INTO the flap in the latest {len(recent)} "
+            f"detection(s) (max {max(recent):.0%} of box in the zone) -- "
+            f"standing down; a startle mid-opening could hurt it. {detail}")
+        return "in_flap"
     if False:
         log(f"  deterrent: animal AT THE FLAP in {at_flap} of {boxed} framed "
             f"detections -- standing down. A cat part-way through could bolt "
@@ -530,15 +554,21 @@ def escalate(grab_frames, log=_flush_print, already_played=1):
             log(f"  escalation: no frames -- stopping after {played}")
             return played
 
-        verdict, tally, people, at_flap, boxed, flap_seq, geom = score_burst(frames)
+        verdict, tally, people, at_flap, boxed, flap_seq, commit_seq, geom = \
+            score_burst(frames)
         orange = tally.get("orange_cat", 0)
 
         if people:
             log(f"  escalation: PERSON appeared -- stopping after {played}")
             return played
-        if boxed and at_flap * 2 > boxed:
-            log(f"  escalation: cat moved to the flap ({at_flap}/{boxed}) -- "
-                f"stopping after {played}, it must not be driven back inside")
+        # Half-step (08-31): keep sounding at a cat standing AT the flap --
+        # that is the back-out-and-run experiment -- and stop only once it is
+        # substantially THROUGH the opening.
+        recent_commit = commit_seq[-FLAP_RECENT:] if commit_seq else []
+        if recent_commit and any(c >= FLAP_COMMIT for c in recent_commit):
+            log(f"  escalation: cat is INTO the flap "
+                f"(max {max(recent_commit):.0%} of box in the zone) -- "
+                f"stopping after {played}, no startle mid-opening")
             return played
         if orange < MIN_ORANGE:
             log(f"  escalation: target gone (orange={orange}) -- "
