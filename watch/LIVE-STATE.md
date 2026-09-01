@@ -59,11 +59,12 @@ distinct instant per ~5s and the full chain was 3.5-8s. Hence:
 
 ## Running, and surviving this session
 
-    patrol        pid 2658847 (restarted 09:52 08-31: live-stream loop + N4),
-                  DETER_ARM=1, HA token in env; live RTSP at 0.33s cadence
-                  21:45-06:00, segment poll at 30s otherwise; cron restarts it
-    ocp-detector  systemd, restarted 09:56 08-31 with the N4 deter. HA path
-                  delivers in ~7s since Dima disabled cat_motion_rpi on 08-28.
+    patrol        pid 2727419 (restarted 17:06 08-31: full 08-31 stack incl.
+                  graded sequence), DETER_ARM=1, HA token in env; live RTSP at
+                  0.33s cadence 21:45-06:00, 30s poll otherwise; cron restarts
+    ocp-detector  systemd; NEEDS RESTART for the graded sequence (last
+                  restarted 16:21 with the hygiene pass). HA path delivers in
+                  ~7s since Dima disabled cat_motion_rpi on 08-28.
     soundserver   `python -m http.server 8081` in ~/projects/ocp/sounds/,
                   pid 574231 -- HA fetches the sounds FROM here over the tunnel
     wg-quick@wg0  the tunnel
@@ -73,9 +74,9 @@ is no "off" that survives a restart except editing that line.
 
 ## Not running
 
-The five monitor watches died with the previous session. Nothing alerts on a
-fire, a freeze precursor, or delivery going down. The system keeps running;
-only the watching stops. Re-arm from `REARM.md` if wanted.
+The 08-31 Claude session armed a patrol.log watch (fires/exits/BLIND/WEDGED/
+errors) and a 22:05 went-hot check — but they die with that session. Nothing
+durable alerts on a fire or on delivery going down. Re-arm from `REARM.md`.
 
 ## HOW TO DISARM — do this before working on it near 22:00
 
@@ -96,9 +97,11 @@ Narrowing the window is gentler than disarming: `DETER_HOUR_FROM` /
 
 ## If it fires
 
-It plays DRILL_boost3 then escalates through dog bark, growl, bark — up to 6
-sounds over 30s, stopping the moment the cat leaves, reaches the flap, or a
-person appears. It writes a 75s video to `~/ocp-watch/reactions/fire-*.mp4`.
+Far first sight: angrycat_full or guarddogs_far (nightly rotation) at
+volume 0.6. Close: DRILL_boost3 at 1.0. Escalation while it stays: drill,
+dog_bark_big, dog_growl, dog_bark, catsfight — up to 6 sounds over 30s,
+stopping the moment the cat leaves, gets INTO the flap opening, or a person
+appears. It writes a 75s video to `~/ocp-watch/reactions/fire-*.mp4`.
 Feed every new fire video to `evaluate_deter.py` the next morning.
 
 Sounds play at a neighbour's house at 3am. That is agreed with Dima for the
@@ -160,14 +163,33 @@ The patrol is unaffected. One line on his side: `--max-time 5`. See
 - Speaker media_player.nursery_speaker_2 SUPPORTS volume_set (now at 1.0) --
   distance-scaled volume is available for the graded sequence.
 
-## Next (from REVIEW-2026-08-31, in order; N1+N4 done 08-31)
+## What changed 08-31, fifth pass (N2 + graded sequence; Dave's verdicts)
 
-1. N2: fire on first sight in the open (NOT a gate zone -- see correction).
-2. N3: sound chain under ~1.5s (stage WAVs in HA config/www).
-3. N5: acceptance bar in evaluate_deter (sound in air <=2.5s after gate
-   appearance on the 023323 burst) before changing any gate.
-4. N6 scorecard: keep counting visits / entries / pre-entry fires nightly.
-5. D6 person-suppression fix -- DONE 08-31 (commit 956e4ab).
+- Sounds screened by Dave (two audition rounds on the artifact page). Kept:
+  angrycat_full, catsfight, guarddogs_far (new, mastered to drill loudness),
+  plus the existing drill + three dogs (dogs re-leveled +0.3-0.6dB).
+  Rejected: Hshh, Poshel-Otsuda (was 13dB under-leveled all along), siren,
+  noise bursts, and all other freesound candidates. Sources kept in
+  ~/ocp-watch/sound-candidates/.
+- **N2 live: no more too_far hold.** A far first sight (height < 20%, not
+  closing) fires the GRADED opener immediately: angrycat_full /
+  guarddogs_far rotating nightly, at volume 0.6 (speaker volume_set per
+  play, always explicit). Close/closing: DRILL_boost3 at 1.0 as before.
+  Escalation ladder: drill, dog_bark_big, dog_growl, dog_bark, catsfight
+  (last rung); after a far opener the ladder starts AT the drill
+  (seq_offset -1).
+- N5 acceptance bar met on replay: 08-31 entry fires with sound in air 2.5s
+  after first appearance (sim 0.7s stale; ~2.0s at live 0.2s), landing
+  mid-patio h=30%. 08-29 approach fires 3s earlier (far opener at the
+  gate). Exits still silent. Patrol restarted 17:06 on this; detector
+  restart pending Dave's sudo.
+
+## Next (in order)
+
+1. N3: sound chain under ~1.5s (stage WAVs in HA config/www) -- the last
+   latency item; do as one migration now that the sound set is final.
+2. N6 scorecard: keep counting visits / entries / pre-entry fires nightly.
+3. D6 person-suppression fix -- DONE 08-31 (commit 956e4ab).
 
 ## Settled questions (do not re-raise)
 

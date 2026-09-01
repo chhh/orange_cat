@@ -278,6 +278,7 @@ def consider(grab_frames, log=_flush_print):
             f"sound now cannot deter and only teaches it the noise is "
             f"harmless -- standing down. {detail}")
         return "exiting"
+    opener, volume, seq_offset = SOUND_SEQUENCE[0], 1.0, 0
     if geom:
         height = geom[-1][1]
         # "Closing" must not assume a direction. x0 falling only detects an
@@ -296,10 +297,12 @@ def consider(grab_frames, log=_flush_print):
                  and height >= 1.4 * geom[0][1] and not _x_retreating)
         closing = (_x_closing or _grew) and height >= APPROACH_HEIGHT_PCT
         if height < MIN_HEIGHT_PCT and not closing:
-            log(f"  deterrent: too far for a useful startle "
-                f"(height {height:.1f}% < {MIN_HEIGHT_PCT}%, not closing) -- holding. {detail}")
-            return "too_far"
-        if closing and height < MIN_HEIGHT_PCT:
+            # N2 (2026-08-31): a far cat is no longer a hold. On 08-31 the
+            # stray crossed the patio in ~4s; "too far" spent the only shot
+            # waiting for proof it was coming toward the door it always comes
+            # toward. Fire the graded opener on first sight instead.
+            opener, volume, seq_offset = _far_opener(), FAR_VOLUME, -1
+        elif closing and height < MIN_HEIGHT_PCT:
             log(f"  deterrent: cat is CLOSING on the door "
                 f"(x {geom[0][0]}->{geom[-1][0]}, height {height:.1f}%) -- firing now so "
                 f"the sound lands as it arrives. {detail}")
@@ -322,13 +325,15 @@ def consider(grab_frames, log=_flush_print):
         log(f"  deterrent: WOULD HAVE PLAYED a sound now (dry run). {detail}")
         return "would_fire"
 
-    sound = SOUND_SEQUENCE[0]
     # Claim the cooldown BEFORE playing, so a second process racing us on the
     # same cat backs off rather than doubling up while we are mid-request.
     _mark_fired()
+    _FIRE_PLAN["seq_offset"] = seq_offset
     try:
-        _play(sound, log)
-        log(f"  deterrent: PLAYED {sound}. {detail}")
+        _play(opener, log, volume=volume)
+        graded = (f" at volume {volume:.1f} (far opener; height "
+                  f"{geom[-1][1]:.1f}%)" if volume < 1.0 and geom else "")
+        log(f"  deterrent: PLAYED {opener}{graded}. {detail}")
         return "fired"
     except Exception as exc:
         log(f"  deterrent: playback FAILED ({exc}). {detail}")
@@ -501,29 +506,69 @@ def _aborted():
 # startle. The dog sounds carry a threat a cat has evolved to care about, which
 # a power tool does not. So: startle, then escalate in KIND, not just in
 # repetition. A resident flinched at the drill on 08-27 and did not leave.
+# catsfight (screened by Dave 08-31) is the final rung: the loudest
+# conspecific alarm, kept rare.
 SOUND_SEQUENCE = [s.strip() for s in os.getenv(
     "DETER_SOUNDS",
-    "DRILL_boost3.wav,dog_bark_big.wav,dog_growl.wav,dog_bark.wav"
+    "DRILL_boost3.wav,dog_bark_big.wav,dog_growl.wav,dog_bark.wav,catsfight.wav"
+).split(",") if s.strip()]
+
+# GRADED THREAT (Dave's design, 2026-08-31). A drill blast from a not-loud
+# speaker at a cat most of a patio away is not credible; a sustained growl is
+# -- a real predator announces itself at a distance and escalates as range
+# closes. So a FAR first sight opens with a menacing growl at reduced volume
+# (quiet reads as "nearby animal", and spares the neighbours), and the drill
+# startle waits until the cat is close. The two openers rotate NIGHTLY, not
+# per fire: habituation is fought across nights, while within one night a
+# consistent voice reads as one animal.
+FAR_VOLUME = float(os.getenv("DETER_FAR_VOLUME", "0.6"))
+FAR_OPENERS = [s.strip() for s in os.getenv(
+    "DETER_FAR_OPENERS", "angrycat_full.wav,guarddogs_far.wav"
 ).split(",") if s.strip()]
 
 
-def _play(name, log=print):
-    """Play one sound, by URL, through the camera speaker."""
+def _far_opener():
+    return FAR_OPENERS[time.localtime().tm_yday % len(FAR_OPENERS)]
+
+
+# How consider() tells the escalation thread where the ladder starts: after a
+# far growl opener the FIRST repeat should be the drill (offset -1); after a
+# drill opener the ladder continues from the bark as before (offset 0).
+_FIRE_PLAN = {"seq_offset": 0}
+
+
+def _play(name, log=print, volume=1.0):
+    """Play one sound, by URL, through the camera speaker.
+
+    `volume` is set explicitly on EVERY play (the speaker supports
+    volume_set; verified 2026-08-31): the far opener plays reduced, the
+    startle sounds full, and stateless per-call setting means a crash between
+    sounds can never leave the speaker stuck quiet for the next fire.
+    """
     import json as _json, urllib.request, os as _os
     token = _os.getenv("HA_LONG_LIVED_TOKEN")
     if not token:
         raise RuntimeError("HA_LONG_LIVED_TOKEN not set")
     import config
-    payload = {"entity_id": config.HA_SPEAKER,
-               "media_content_id": f"{SOUND_BASE}/{name}",
-               "media_content_type": "music"}
-    req = urllib.request.Request(
-        f"http://{config.HA_HOST}:8123/api/services/media_player/play_media",
-        data=_json.dumps(payload).encode(),
-        headers={"Authorization": f"Bearer {token}",
-                 "Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=10):
-        pass
+
+    def _svc(service, payload):
+        req = urllib.request.Request(
+            f"http://{config.HA_HOST}:8123/api/services/media_player/{service}",
+            data=_json.dumps(payload).encode(),
+            headers={"Authorization": f"Bearer {token}",
+                     "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10):
+            pass
+
+    try:
+        _svc("volume_set", {"entity_id": config.HA_SPEAKER,
+                            "volume_level": max(0.0, min(1.0, volume))})
+    except Exception as exc:
+        # A failed volume call must not silence the fire itself.
+        log(f"  deterrent: volume_set failed ({exc}) -- playing anyway")
+    _svc("play_media", {"entity_id": config.HA_SPEAKER,
+                        "media_content_id": f"{SOUND_BASE}/{name}",
+                        "media_content_type": "music"})
 
 
 def _esc_params():
@@ -533,8 +578,13 @@ def _esc_params():
             ESC_MAX_DURATION or config.SOUND_MAX_DURATION)
 
 
-def escalate(grab_frames, log=_flush_print, already_played=1):
-    """Keep sounding while the cat stays, re-checking every gate each time."""
+def escalate(grab_frames, log=_flush_print, already_played=1, seq_offset=0):
+    """Keep sounding while the cat stays, re-checking every gate each time.
+
+    `seq_offset` shifts where the ladder starts: -1 after a far growl opener
+    (the drill startle comes SECOND, once the growl has the cat's attention),
+    0 after a drill opener (continue from the bark as always).
+    """
     import config
     import talk
     lo, hi, max_dur = _esc_params()
@@ -577,7 +627,7 @@ def escalate(grab_frames, log=_flush_print, already_played=1):
                 f"stopping after {played} sound(s)")
             return played
 
-        sound = SOUND_SEQUENCE[played % len(SOUND_SEQUENCE)]
+        sound = SOUND_SEQUENCE[(played + seq_offset) % len(SOUND_SEQUENCE)]
         _mark_fired()          # keep the shared cooldown claimed
         try:
             _play(sound, log)
@@ -608,5 +658,7 @@ def consider_and_escalate(grab_frames, log=_flush_print, escalate_grab=None):
     if decision == "fired":
         threading.Thread(target=escalate,
                          args=(escalate_grab or grab_frames,),
-                         kwargs={"log": log}, daemon=True).start()
+                         kwargs={"log": log,
+                                 "seq_offset": _FIRE_PLAN["seq_offset"]},
+                         daemon=True).start()
     return decision
