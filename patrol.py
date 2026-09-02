@@ -29,7 +29,8 @@ whole crossing fit inside one hole, and the first orange verdict was a cat
 already at the flap, where the welfare gate rightly holds. See
 REVIEW-2026-08-31.md.
 """
-import os, sys, glob, subprocess, time, tempfile
+import os, sys, glob, subprocess, threading, time, tempfile
+from collections import deque
 sys.path.insert(0, "/home/david/projects/ocp")
 os.chdir("/home/david/projects/ocp")
 import cv2, detect, animal
@@ -326,6 +327,11 @@ def main():
     last_beat = time.time()
     n_frames = n_det = 0
     last_decision = None
+    # The last few live classifications, newest last: (time, verdict, box,
+    # frame_height). Two consecutive orange entries here are deter's
+    # first-glimpse corroboration -- see deter.consider(live_track=).
+    recent = deque(maxlen=4)
+    last_visit_capture = 0.0
 
     while True:
         try:
@@ -334,6 +340,9 @@ def main():
             if f is not None:
                 n_frames += 1
                 box, verdict, reasoning, info = classify_frame(f)
+                recent.append((time.time(), verdict,
+                               box["box"] if box else None,
+                               f.shape[0]))
                 if box is not None:
                     n_det += 1
                     is_person = box.get("person_overlap", 0.0) >= animal.PERSON_OVERLAP
@@ -353,15 +362,36 @@ def main():
                     # after the 120s report gap.
                     if verdict == "orange_cat" and deter is not None:
                         try:
+                            now = time.time()
+                            live_track = [(v, b, fh)
+                                          for t, v, b, fh in recent
+                                          if now - t <= 1.5 and b is not None]
                             decision = deter.consider_and_escalate(
-                                src.grab, log=dlog)
+                                src.grab, log=dlog, live_track=live_track)
                             if decision != last_decision:
                                 print(f"{time.strftime('%H:%M:%S')} deterrent "
                                       f"decision: {decision}", flush=True)
-                            last_decision = decision
                             if decision == "fired":
                                 deter.capture_reaction(
                                     f"fire-{time.strftime('%Y%m%d-%H%M%S')}")
+                            elif (decision in ("exiting", "in_flap")
+                                  and last_decision not in ("exiting", "in_flap")
+                                  and now - last_visit_capture > 600):
+                                # Silent evidence: entries and exits get video
+                                # even though no sound plays (09-01: the exit
+                                # had no footage and the morning wanted it).
+                                # Threaded -- the loop must keep watching; an
+                                # in_flap cat may retreat to the open, where
+                                # we very much want to fire.
+                                last_visit_capture = now
+                                tag = f"visit-{time.strftime('%Y%m%d-%H%M%S')}"
+                                threading.Thread(
+                                    target=deter.capture_reaction,
+                                    args=(tag,), daemon=True).start()
+                                print(f"{time.strftime('%H:%M:%S')} capturing "
+                                      f"silent visit video ({tag}, "
+                                      f"{decision})", flush=True)
+                            last_decision = decision
                         except Exception as e:
                             print(f"  deterrent error: {e}", flush=True)
                 else:

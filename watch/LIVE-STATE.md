@@ -184,12 +184,42 @@ The patrol is unaffected. One line on his side: `--max-time 5`. See
   gate). Exits still silent. Patrol restarted 17:06 on this; detector
   restart pending Dave's sudo.
 
+## What changed 09-01 (recommendations from the night report)
+
+- Night 08-31/09-01: 2 pre-entry engagements, 1 repel (01:52), 1 breach
+  (01:58 -- sprinted through drill+bark into the flap, ate 11 min), silent
+  exit 02:09. Report: `~/projects/ocp_review/Night-2026-09-01-report.html`
+  (artifact "The Last Meter").
+- **R1 first-glimpse engagement**: patrol passes its last ~1.5s of live
+  classifications to deter; two consecutive live orange frames satisfy the
+  2-frame FP rule without waiting for the burst re-vote (which scored 0 on
+  the small fresh cat at 01:58:20 and cost 5 of 9 visible seconds). Live
+  boxes also feed the flap/range checks as the newest evidence.
+- **R2 close-range rapid ladder**: a close engagement escalates at ~1s (was
+  2-3s), harshest repeat first: drill opener -> catsfight -> big bark ->
+  growl -> bark. Far engagements keep the graded spacing.
+- **R3**: the three new sounds now ship as MP3s (200-350KB, were 1-1.6MB
+  WAVs -- an untested tunnel-fetch risk at the moment of fire). Staging kit
+  for Dima: ha-staging.zip (Drive link in the night report); when he stages,
+  set DETER_SOUND_BASE=http://192.168.1.133:8123/local/ocp and restart both.
+- **R5 evidence**: silent reaction capture (threaded) on the first
+  exiting/in_flap of a visit; person stand-downs save their burst to
+  ~/ocp-watch/person-evidence/standdown-*/; escalation logs "VANISHED AT THE
+  FLAP -- likely went INSIDE" and marks the visit origin=flap so a quick
+  re-emergence reads as the exit it is.
+- **R7 TRIPWIRE (Dave, 09-01): if the cat gets inside on 2 of the next 5
+  armed nights despite the above, the water build starts.** Count from the
+  night of 09-01/02. Scorecard "exit visits seen" = entries.
+- Still open: R4 (physical obstacle to lengthen the last meter -- Dima's
+  patio, his call), NVR pull for the 02:09:21 person frame, and whether the
+  five 2am sounds were audible in the house.
+
 ## Next (in order)
 
-1. N3: sound chain under ~1.5s (stage WAVs in HA config/www) -- the last
-   latency item; do as one migration now that the sound set is final.
-2. N6 scorecard: keep counting visits / entries / pre-entry fires nightly.
-3. D6 person-suppression fix -- DONE 08-31 (commit 956e4ab).
+1. Dima stages ha-staging.zip -> flip DETER_SOUND_BASE, restart both.
+2. R4 with Dima: an obstacle arc in front of the flap (+2-3s of approach).
+3. N6 scorecard: count visits / entries / pre-entry fires nightly against
+   the 2-of-5 tripwire.
 
 ## Settled questions (do not re-raise)
 

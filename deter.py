@@ -235,10 +235,18 @@ def _flush_print(msg):
     print(msg, flush=True)
 
 
-def consider(grab_frames, log=_flush_print):
+def consider(grab_frames, log=_flush_print, live_track=None):
     """Called when a detector thinks it saw an orange cat.
 
     `grab_frames(n)` must return n fresh frames. Returns the string decision.
+
+    `live_track` (optional): newest-last [(verdict, box, frame_height_px)]
+    from the caller's OWN per-frame classifications over the last ~1.5s. At
+    the patrol's 0.33s cadence, two consecutive live orange verdicts are the
+    same two-distinct-frames protection the burst re-vote provides -- but in
+    0.7s instead of ~5. On the 09-01 breach the burst vote scored 0 orange on
+    a small fresh cat and spent five of its nine visible seconds confirming;
+    the live track is how the first glimpse becomes the engagement.
     """
     frames = [x for x in (grab_frames(BURST) or []) if x is not None]
     if not frames:
@@ -248,13 +256,41 @@ def consider(grab_frames, log=_flush_print):
     verdict, tally, people, at_flap, boxed, flap_seq, commit_seq, geom = \
         score_burst(frames)
     orange = tally.get("orange_cat", 0)
-    detail = (f"burst={len(frames)} orange={orange} "
+    live = live_track or []
+    live_orange = sum(1 for v, _, _ in live if v == "orange_cat")
+    # The caller's live boxes are FRESHER than any burst frame: append them so
+    # the flap and range checks judge the cat where it is now, and so a burst
+    # that could not box a small cat still gets geometry.
+    for v, box, fh in live:
+        if box is None or not fh:
+            continue
+        boxed += 1
+        near = _overlaps(box, FLAP_ZONE)
+        flap_seq.append(near)
+        commit_seq.append(_overlap_frac(box, FLAP_ZONE))
+        geom.append((box[0], 100.0 * (box[3] - box[1]) / fh))
+        if near:
+            at_flap += 1
+    confirmed_orange = orange >= MIN_ORANGE or live_orange >= MIN_ORANGE
+    detail = (f"burst={len(frames)} orange={orange} live_orange={live_orange} "
               f"people_frames={people} at_flap={at_flap} tally={tally}")
-    origin = _visit_update(flap_seq, verdict)
+    origin = _visit_update(
+        flap_seq, "orange_cat" if confirmed_orange else verdict)
 
     if people:
+        note = ""
+        try:
+            import cv2 as _cv2
+            d = os.path.join(PERSON_DIR,
+                             time.strftime("standdown-%Y%m%d-%H%M%S"))
+            os.makedirs(d, exist_ok=True)
+            for i, f in enumerate(frames):
+                _cv2.imwrite(os.path.join(d, f"{i:02d}.jpg"), f)
+            note = f" Burst saved to {d}."
+        except Exception:
+            pass
         log(f"  deterrent: PERSON in {people} of {len(frames)} burst frames "
-            f"-- standing down. {detail}")
+            f"-- standing down.{note} {detail}")
         return "person"
     # WHERE THE CAT IS NOW is what matters -- the sound lands in the future,
     # so a burst-wide majority is the wrong test. Judge the most recent
@@ -278,7 +314,10 @@ def consider(grab_frames, log=_flush_print):
             f"sound now cannot deter and only teaches it the noise is "
             f"harmless -- standing down. {detail}")
         return "exiting"
-    opener, volume, seq_offset = SOUND_SEQUENCE[0], 1.0, 0
+    opener, volume = SOUND_SEQUENCE[0], 1.0
+    # Default ladder: continue past the drill. Close engagements override
+    # below with the harshest-first rapid ladder.
+    ladder, rapid = SOUND_SEQUENCE[1:], False
     if geom:
         height = geom[-1][1]
         # "Closing" must not assume a direction. x0 falling only detects an
@@ -300,16 +339,24 @@ def consider(grab_frames, log=_flush_print):
             # N2 (2026-08-31): a far cat is no longer a hold. On 08-31 the
             # stray crossed the patio in ~4s; "too far" spent the only shot
             # waiting for proof it was coming toward the door it always comes
-            # toward. Fire the graded opener on first sight instead.
-            opener, volume, seq_offset = _far_opener(), FAR_VOLUME, -1
-        elif closing and height < MIN_HEIGHT_PCT:
-            log(f"  deterrent: cat is CLOSING on the door "
-                f"(x {geom[0][0]}->{geom[-1][0]}, height {height:.1f}%) -- firing now so "
-                f"the sound lands as it arrives. {detail}")
+            # toward. Fire the graded opener on first sight instead; the
+            # ladder starts AT the drill.
+            opener, volume = _far_opener(), FAR_VOLUME
+            ladder = SOUND_SEQUENCE[:]
+        else:
+            # Close engagement: a race, not a negotiation (09-01 breach:
+            # entry 3s after the drill). Harshest repeat first, ~1s spacing.
+            ladder = SOUND_SEQUENCE[-1:] + SOUND_SEQUENCE[1:-1]
+            rapid = True
+            if closing and height < MIN_HEIGHT_PCT:
+                log(f"  deterrent: cat is CLOSING on the door "
+                    f"(x {geom[0][0]}->{geom[-1][0]}, height {height:.1f}%) -- firing now so "
+                    f"the sound lands as it arrives. {detail}")
 
-    if orange < MIN_ORANGE:
-        log(f"  deterrent: only {orange} orange frame(s), need {MIN_ORANGE} "
-            f"-- standing down (this is the false-positive signature). {detail}")
+    if not confirmed_orange:
+        log(f"  deterrent: only {orange} burst / {live_orange} live orange "
+            f"frame(s), need {MIN_ORANGE} of either -- standing down (one "
+            f"frame is the false-positive signature). {detail}")
         return "too_few"
     if not _in_window():
         log(f"  deterrent: confirmed orange cat but outside the "
@@ -328,11 +375,13 @@ def consider(grab_frames, log=_flush_print):
     # Claim the cooldown BEFORE playing, so a second process racing us on the
     # same cat backs off rather than doubling up while we are mid-request.
     _mark_fired()
-    _FIRE_PLAN["seq_offset"] = seq_offset
+    _FIRE_PLAN["ladder"] = ladder
+    _FIRE_PLAN["rapid"] = rapid
     try:
         _play(opener, log, volume=volume)
         graded = (f" at volume {volume:.1f} (far opener; height "
-                  f"{geom[-1][1]:.1f}%)" if volume < 1.0 and geom else "")
+                  f"{geom[-1][1]:.1f}%)" if volume < 1.0 and geom else
+                  (" (close engagement: rapid ladder)" if rapid else ""))
         log(f"  deterrent: PLAYED {opener}{graded}. {detail}")
         return "fired"
     except Exception as exc:
@@ -510,7 +559,7 @@ def _aborted():
 # conspecific alarm, kept rare.
 SOUND_SEQUENCE = [s.strip() for s in os.getenv(
     "DETER_SOUNDS",
-    "DRILL_boost3.wav,dog_bark_big.wav,dog_growl.wav,dog_bark.wav,catsfight.wav"
+    "DRILL_boost3.wav,dog_bark_big.wav,dog_growl.wav,dog_bark.wav,catsfight.mp3"
 ).split(",") if s.strip()]
 
 # GRADED THREAT (Dave's design, 2026-08-31). A drill blast from a not-loud
@@ -523,7 +572,7 @@ SOUND_SEQUENCE = [s.strip() for s in os.getenv(
 # consistent voice reads as one animal.
 FAR_VOLUME = float(os.getenv("DETER_FAR_VOLUME", "0.6"))
 FAR_OPENERS = [s.strip() for s in os.getenv(
-    "DETER_FAR_OPENERS", "angrycat_full.wav,guarddogs_far.wav"
+    "DETER_FAR_OPENERS", "angrycat_full.mp3,guarddogs_far.mp3"
 ).split(",") if s.strip()]
 
 
@@ -531,10 +580,20 @@ def _far_opener():
     return FAR_OPENERS[time.localtime().tm_yday % len(FAR_OPENERS)]
 
 
-# How consider() tells the escalation thread where the ladder starts: after a
-# far growl opener the FIRST repeat should be the drill (offset -1); after a
-# drill opener the ladder continues from the bark as before (offset 0).
-_FIRE_PLAN = {"seq_offset": 0}
+# How consider() tells the escalation thread what to play next. `ladder` is
+# the ordered list of repeats AFTER the opener; `rapid` compresses the 2-3s
+# escalation interval to ~1s. CLOSE-RANGE DOCTRINE (09-01): on the breach at
+# 01:58 the cat entered 3s after the drill, having heard one follow-up at a
+# polite interval. A close engagement is a race, so it gets the harshest
+# repeat first (catsfight) and ~1s spacing; a far engagement keeps the
+# graded, spaced ladder -- menace, then startle, then dogs.
+_FIRE_PLAN = {"ladder": None, "rapid": False}
+
+# Where a person stand-down saves its evidence. The 02:09:21 stand-down was
+# judged on six in-memory frames and discarded; whether it was a real person
+# or YOLO misreading the cat is now unknowable. This gate is rare and
+# safety-critical -- keep what it saw.
+PERSON_DIR = os.getenv("DETER_PERSON_DIR", "/home/david/ocp-watch/person-evidence")
 
 
 def _play(name, log=print, volume=1.0):
@@ -578,21 +637,26 @@ def _esc_params():
             ESC_MAX_DURATION or config.SOUND_MAX_DURATION)
 
 
-def escalate(grab_frames, log=_flush_print, already_played=1, seq_offset=0):
+def escalate(grab_frames, log=_flush_print, already_played=1, ladder=None,
+             rapid=False):
     """Keep sounding while the cat stays, re-checking every gate each time.
 
-    `seq_offset` shifts where the ladder starts: -1 after a far growl opener
-    (the drill startle comes SECOND, once the growl has the cat's attention),
-    0 after a drill opener (continue from the bark as always).
+    `ladder` is the ordered list of repeats after the opener (defaults to the
+    sequence past the drill). `rapid` compresses the interval to ~1s -- the
+    close-range doctrine: a cat a body-length from the door decides in the
+    next two seconds, not the next six.
     """
     import config
     import talk
     lo, hi, max_dur = _esc_params()
     started = time.time()
     played = already_played
+    ladder = list(ladder if ladder is not None else SOUND_SEQUENCE[1:])
+    last_near_flap = False
 
     while played < ESC_MAX_SOUNDS:
-        time.sleep(random.uniform(lo, hi))
+        time.sleep(random.uniform(0.8, 1.2) if rapid
+                   else random.uniform(lo, hi))
         if _aborted():
             log(f"  escalation: ABORTED by hand after {played} sound(s)")
             return played
@@ -623,17 +687,38 @@ def escalate(grab_frames, log=_flush_print, already_played=1, seq_offset=0):
                 f"stopping after {played}, no startle mid-opening")
             return played
         if orange < MIN_ORANGE:
-            log(f"  escalation: target gone (orange={orange}) -- "
-                f"stopping after {played} sound(s)")
+            if last_near_flap:
+                # It did not walk off camera -- it vanished at the door. On
+                # 09-01 this exact moment was logged "target gone" while the
+                # cat was starting an 11-minute meal. Say what happened, and
+                # mark the visit so a re-emergence inside the chain gap is
+                # treated as the exit it is.
+                log(f"  escalation: target VANISHED AT THE FLAP -- likely "
+                    f"went INSIDE, not away. Stopping after {played} sound(s)")
+                try:
+                    import json as _json
+                    with open(VISIT_FILE, "w") as fh:
+                        _json.dump({"last_seen": time.time(),
+                                    "origin": "flap"}, fh)
+                except OSError:
+                    pass
+            else:
+                log(f"  escalation: target gone (orange={orange}) -- "
+                    f"stopping after {played} sound(s)")
             return played
+        last_near_flap = bool(flap_seq) and flap_seq[-1]
 
-        sound = SOUND_SEQUENCE[(played + seq_offset) % len(SOUND_SEQUENCE)]
+        idx = played - already_played
+        if idx >= len(ladder):
+            log(f"  escalation: ladder exhausted after {played} sound(s)")
+            return played
+        sound = ladder[idx]
         _mark_fired()          # keep the shared cooldown claimed
         try:
             _play(sound, log)
             played += 1
             log(f"  escalation: sound {played} -- {sound} (still present, "
-                f"orange={orange})")
+                f"orange={orange}{', rapid' if rapid else ''})")
         except Exception as exc:
             log(f"  escalation: playback failed ({exc}) -- stopping")
             return played
@@ -642,7 +727,8 @@ def escalate(grab_frames, log=_flush_print, already_played=1, seq_offset=0):
     return played
 
 
-def consider_and_escalate(grab_frames, log=_flush_print, escalate_grab=None):
+def consider_and_escalate(grab_frames, log=_flush_print, escalate_grab=None,
+                          live_track=None):
     """consider(), and if it fired, keep escalating in the background.
 
     `escalate_grab` MUST return genuinely fresh frames on every call. The
@@ -654,11 +740,12 @@ def consider_and_escalate(grab_frames, log=_flush_print, escalate_grab=None):
     the flap zone. Defaults to `grab_frames` for callers whose grabber is
     already live (the patrol).
     """
-    decision = consider(grab_frames, log=log)
+    decision = consider(grab_frames, log=log, live_track=live_track)
     if decision == "fired":
         threading.Thread(target=escalate,
                          args=(escalate_grab or grab_frames,),
                          kwargs={"log": log,
-                                 "seq_offset": _FIRE_PLAN["seq_offset"]},
+                                 "ladder": _FIRE_PLAN["ladder"],
+                                 "rapid": _FIRE_PLAN["rapid"]},
                          daemon=True).start()
     return decision

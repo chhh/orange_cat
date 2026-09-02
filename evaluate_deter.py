@@ -165,12 +165,15 @@ def run(path, stale, interval, sound_latency, legacy_gap, quiet=False):
     clock.install()
     rep = patrol.Reporter()
     fires, last = [], None
+    recent = []          # (sim_t, verdict, box, frame_h) -- the live track
     t = stale
     while t < dur:
         clock.now = t
         i = int((t - stale) * FPS)
         f = frames[i]
         box, verdict, reasoning, info = patrol.classify_frame(f)
+        recent.append((t, verdict, box["box"] if box else None, f.shape[0]))
+        recent = recent[-4:]
         decision = None
         if box is not None:
             is_person = box.get("person_overlap", 0.0) >= animal.PERSON_OVERLAP
@@ -178,8 +181,11 @@ def run(path, stale, interval, sound_latency, legacy_gap, quiet=False):
             if verdict == "orange_cat" and (reported or not legacy_gap):
                 def grab(n, i=i):
                     return [frames[j] for j in range(max(0, i - n + 1), i + 1)]
+                live_track = [(v, b, fh) for tt, v, b, fh in recent
+                              if t - tt <= 1.5 and b is not None]
                 msgs = []
-                decision = deter.consider(grab, log=msgs.append)
+                decision = deter.consider(grab, log=msgs.append,
+                                          live_track=live_track)
                 if decision == "would_fire":
                     land = t + sound_latency
                     li = int(land * FPS)
