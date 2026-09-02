@@ -372,8 +372,16 @@ def main():
                                 print(f"{time.strftime('%H:%M:%S')} deterrent "
                                       f"decision: {decision}", flush=True)
                             if decision == "fired":
-                                deter.capture_reaction(
-                                    f"fire-{time.strftime('%Y%m%d-%H%M%S')}")
+                                # THREADED (09-02): the blocking version blinded
+                                # the patrol for ~75s after every fire, and on
+                                # 09-02 both of the night's unseen flap
+                                # transitions (an exit and an entry) happened
+                                # inside those windows. The judge stays in the
+                                # room; the recording happens beside it.
+                                threading.Thread(
+                                    target=deter.capture_reaction,
+                                    args=(f"fire-{time.strftime('%Y%m%d-%H%M%S')}",),
+                                    daemon=True).start()
                             elif (decision in ("exiting", "in_flap")
                                   and last_decision not in ("exiting", "in_flap")
                                   and now - last_visit_capture > 600):

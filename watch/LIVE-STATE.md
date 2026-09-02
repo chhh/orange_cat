@@ -59,12 +59,11 @@ distinct instant per ~5s and the full chain was 3.5-8s. Hence:
 
 ## Running, and surviving this session
 
-    patrol        pid 2727419 (restarted 17:06 08-31: full 08-31 stack incl.
-                  graded sequence), DETER_ARM=1, HA token in env; live RTSP at
-                  0.33s cadence 21:45-06:00, 30s poll otherwise; cron restarts
-    ocp-detector  systemd; NEEDS RESTART for the graded sequence (last
-                  restarted 16:21 with the hygiene pass). HA path delivers in
-                  ~7s since Dima disabled cat_motion_rpi on 08-28.
+    patrol        restarted 09-02 with the full stack (first-glimpse, rapid
+                  ladder, threaded captures, 25s play timeout); DETER_ARM=1;
+                  live RTSP 0.33s cadence 21:45-06:00; cron restarts it
+    ocp-detector  systemd, restarted 09-02 (Dave's sudo) on the same deter.
+                  HA path delivers in ~7s.
     soundserver   `python -m http.server 8081` in ~/projects/ocp/sounds/,
                   pid 574231 -- HA fetches the sounds FROM here over the tunnel
     wg-quick@wg0  the tunnel
@@ -99,7 +98,7 @@ Narrowing the window is gentler than disarming: `DETER_HOUR_FROM` /
 
 Far first sight: angrycat_full or guarddogs_far (nightly rotation) at
 volume 0.6. Close: DRILL_boost3 at 1.0. Escalation while it stays: drill,
-dog_bark_big, dog_growl, dog_bark, catsfight — up to 6 sounds over 30s,
+dog_bark_big, dog_growl, dog_bark, catsfight (8s) — up to 6 sounds over 30s,
 stopping the moment the cat leaves, gets INTO the flap opening, or a person
 appears. It writes a 75s video to `~/ocp-watch/reactions/fire-*.mp4`.
 Feed every new fire video to `evaluate_deter.py` the next morning.
@@ -213,6 +212,26 @@ The patrol is unaffected. One line on his side: `--max-time 5`. See
 - Still open: R4 (physical obstacle to lengthen the last meter -- Dima's
   patio, his call), NVR pull for the 02:09:21 person frame, and whether the
   five 2am sounds were audible in the house.
+
+## What changed 09-02 (night fixes after Two Entries night)
+
+- Night 09-01/02 ("The Guest House" report, ~/projects/ocp_review/
+  Night-2026-09-02-report.html): 2 entries by the stray (04:37 dive-through;
+  04:51 walked in moments after a drill), ~9-min meal, clean silent exit
+  05:01 (first silent-capture video). TRIPWIRE: 1 entry-night of 2 used,
+  night 1 of 5.
+- Fired-path reaction capture is now THREADED: the blocking version blinded
+  the patrol ~75s per fire and hid both unseen flap transitions on 09-02.
+- _play play_media timeout 10s -> 25s: the call blocks until playback ends,
+  so long files were logged "failed (timed out)" while playing -- and the
+  false failure killed the rest of the ladder both times.
+- catsfight.mp3 trimmed to 8s (was 17s of 4am screaming).
+- Close-range trend to watch: drill response decayed from flees-patio
+  (08-30) to dives-through (01:58) to steps-aside-and-enters (04:51).
+- Open: Dima's staging (ha-staging.zip; flip DETER_SOUND_BASE=
+  http://192.168.1.133:8123/local/ocp + restart both when placed), the
+  00:33 nightly ~30s stream stall (ask Dima what runs then), R4 obstacle,
+  audibility question.
 
 ## Next (in order)
 

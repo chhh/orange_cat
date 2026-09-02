@@ -610,13 +610,13 @@ def _play(name, log=print, volume=1.0):
         raise RuntimeError("HA_LONG_LIVED_TOKEN not set")
     import config
 
-    def _svc(service, payload):
+    def _svc(service, payload, timeout=10):
         req = urllib.request.Request(
             f"http://{config.HA_HOST}:8123/api/services/media_player/{service}",
             data=_json.dumps(payload).encode(),
             headers={"Authorization": f"Bearer {token}",
                      "Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=10):
+        with urllib.request.urlopen(req, timeout=timeout):
             pass
 
     try:
@@ -625,9 +625,14 @@ def _play(name, log=print, volume=1.0):
     except Exception as exc:
         # A failed volume call must not silence the fire itself.
         log(f"  deterrent: volume_set failed ({exc}) -- playing anyway")
+    # play_media BLOCKS until playback finishes (measured 09-02: both 17s
+    # screams were logged "failed (timed out)" at the old 10s timeout while
+    # audibly playing -- and the false failure killed the rest of the
+    # ladder). 25s covers the longest file with margin; blocking through a
+    # sound is fine, nothing else should be playing over it anyway.
     _svc("play_media", {"entity_id": config.HA_SPEAKER,
                         "media_content_id": f"{SOUND_BASE}/{name}",
-                        "media_content_type": "music"})
+                        "media_content_type": "music"}, timeout=25)
 
 
 def _esc_params():
