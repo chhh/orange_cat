@@ -15,6 +15,18 @@
 #     echo "@reboot /home/david/ocp-watch/start-patrol.sh" ) | crontab -
 # Verify with: crontab -l
 
+# The lock, not the pgrep, is the real duplicate guard. The pgrep alone has a
+# ~30s race: during the settle sleep below this process is just "bash
+# start-patrol.sh" -- invisible to the pattern -- so a manual run and the
+# */5 cron restart can both pass the check and arm twice (which is exactly
+# what happened 2026-09-02 10:15: two patrols, two deter loops). The lock fd
+# is inherited across exec/setsid into patrol.py and is held for its whole
+# lifetime, so it releases automatically when the patrol dies.
+exec 9>>/home/david/ocp-watch/start-patrol.lock
+flock -n 9 || exit 0
+
+# Belt and suspenders: also yield to a patrol started outside this script
+# (which holds no lock).
 pgrep -f "uv run /home/david/ocp-watch/patrol.py" >/dev/null && exit 0
 
 cd /home/david/projects/ocp || exit 1
