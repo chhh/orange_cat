@@ -31,6 +31,7 @@ Costs ~31 ms/frame on CPU, so a 15-frame burst is well under a second.
 """
 
 import os
+import threading
 
 import cv2
 import numpy as np
@@ -52,6 +53,13 @@ NMS_THRESHOLD = 0.45
 
 _net = None
 _unavailable = None
+
+# cv2.dnn.Net is NOT thread-safe: deter's escalate thread scoring a burst
+# while the patrol loop runs its own detect corrupts the shared net's
+# internal buffers (shape assertions in forwardGraph/concat, seen live
+# 2026-09-03 00:52 -- killed the escalation ladder at sound 2). All
+# setInput/forward pairs go through this lock.
+_net_lock = threading.Lock()
 
 
 def available():
@@ -115,8 +123,9 @@ def detect(frame, want_person=False):
     canvas, scale, ox, oy = _letterbox(frame)
     blob = cv2.dnn.blobFromImage(canvas, 1 / 255.0, (INPUT_SIZE, INPUT_SIZE),
                                  swapRB=True, crop=False)
-    net.setInput(blob)
-    out = net.forward()
+    with _net_lock:
+        net.setInput(blob)
+        out = net.forward()
 
     # YOLOv8 emits (1, 4 + numclasses, numanchors); transpose to per-anchor
     # rows so each row is [cx, cy, w, h, score per class].
