@@ -66,6 +66,15 @@ APPROACH_HEIGHT_PCT = float(os.getenv("DETER_APPROACH_HEIGHT", "12.0"))
 BURST = int(os.getenv("DETER_BURST", "6"))
 MIN_ORANGE = int(os.getenv("DETER_MIN_ORANGE", "2"))
 COOLDOWN = float(os.getenv("DETER_COOLDOWN", "60"))
+# A live escalation ladder refreshes the shared cooldown claim at every sound,
+# a few seconds apart. A claim older than this is a dead hand -- a crashed
+# thread, or a one-shot fire that already gave up -- and a CLOSE engagement
+# may take it over. 09-03 00:53:24: the closing-rule shot ("firing now so the
+# sound lands as it arrives") was refused at since=55s while the only ladder
+# had crashed; the cat entered in silence. Far engagements never take over:
+# repeating an opener at a distant cat is the double-fire the cooldown exists
+# to stop.
+CLOSE_TAKEOVER = float(os.getenv("DETER_CLOSE_TAKEOVER", "15"))
 # Hours during which sound is allowed at all. People were labelled in the
 # archive between 09:06 and 21:55 and never once between 22:00 and 06:00,
 # so the night window is where a mistake is cheapest.
@@ -345,8 +354,10 @@ def consider(grab_frames, log=_flush_print, live_track=None):
             ladder = SOUND_SEQUENCE[:]
         else:
             # Close engagement: a race, not a negotiation (09-01 breach:
-            # entry 3s after the drill). Harshest repeat first, ~1s spacing.
-            ladder = SOUND_SEQUENCE[-1:] + SOUND_SEQUENCE[1:-1]
+            # entry 3s after the drill). Novel siren first (Dima's pick,
+            # 09-02 -- the cat has never heard it), then harshest repeat,
+            # ~1s spacing.
+            ladder = [SIREN] + SOUND_SEQUENCE[-1:] + SOUND_SEQUENCE[1:-1]
             rapid = True
             if closing and height < MIN_HEIGHT_PCT:
                 log(f"  deterrent: cat is CLOSING on the door "
@@ -364,9 +375,14 @@ def consider(grab_frames, log=_flush_print, live_track=None):
         return "out_of_hours"
     since = time.time() - _last_fire_at()
     if since < COOLDOWN:
-        log(f"  deterrent: confirmed, but another process fired {since:.0f}s ago "
-            f"({COOLDOWN:.0f}s shared cooldown). {detail}")
-        return "cooldown"
+        if rapid and since >= CLOSE_TAKEOVER:
+            log(f"  deterrent: shared cooldown is STALE ({since:.0f}s since the "
+                f"last sound; a live ladder refreshes every few seconds) -- "
+                f"close engagement takes it over. {detail}")
+        else:
+            log(f"  deterrent: confirmed, but another process fired {since:.0f}s ago "
+                f"({COOLDOWN:.0f}s shared cooldown). {detail}")
+            return "cooldown"
 
     if not ARMED:
         log(f"  deterrent: WOULD HAVE PLAYED a sound now (dry run). {detail}")
@@ -562,6 +578,15 @@ SOUND_SEQUENCE = [s.strip() for s in os.getenv(
     "DRILL_boost3.wav,dog_bark_big.wav,dog_growl.wav,dog_bark.wav,catsfight.mp3"
 ).split(",") if s.strip()]
 
+# Dima's siren (his suggestion, 2026-09-02). Already sitting on the HA box
+# under /homeassistant/www, so it is the one sound with ZERO tunnel fetch --
+# HA serves it to the speaker off its own disk. A full URL here bypasses
+# SOUND_BASE (see _play). Close ladder only: the last meter is where sound
+# is losing, and novel + harsh is the counter Dima asked to try.
+SIREN = os.getenv(
+    "DETER_SIREN",
+    "http://192.168.1.133:8123/local/sounds/archived/siren.wav")
+
 # GRADED THREAT (Dave's design, 2026-08-31). A drill blast from a not-loud
 # speaker at a cat most of a patio away is not credible; a sustained growl is
 # -- a real predator announces itself at a distance and escalates as range
@@ -631,7 +656,8 @@ def _play(name, log=print, volume=1.0):
     # ladder). 25s covers the longest file with margin; blocking through a
     # sound is fine, nothing else should be playing over it anyway.
     _svc("play_media", {"entity_id": config.HA_SPEAKER,
-                        "media_content_id": f"{SOUND_BASE}/{name}",
+                        "media_content_id": (name if name.startswith("http")
+                                             else f"{SOUND_BASE}/{name}"),
                         "media_content_type": "music"}, timeout=25)
 
 

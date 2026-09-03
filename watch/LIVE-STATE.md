@@ -1,8 +1,34 @@
-# What is live right now — 2026-08-31 09:45
+# What is live right now — 2026-09-03 09:00
 
 Read this before changing anything. **The deterrent is armed and will fire
 tonight without anyone starting it.** Dave's standing rule: no sound through
 the camera speakers — tests included — unless Dave has warned Dima first.
+
+## What changed 09-03 morning (after the tripwire night — 2 entries, 2/2)
+
+- **Sounds now come off HA's own disk**: `DETER_SOUND_BASE=
+  http://192.168.1.133:8123/local/ocp/ha-staging` in `.env` (Dima staged the
+  zip; its top-level folder is why the path ends in ha-staging). Removes the
+  ~0.3-0.5s tunnel fetch per sound. The 8081 soundserver on odd-fellow stays
+  up as fallback — flip `.env` back to `http://192.168.7.4:8081` if HA 404s.
+  **Proof-of-whose-sound-played moved**: soundserver.log access lines no
+  longer show our fetches; use patrol.log PLAYED/escalation lines + the HA
+  logbook for `media_player` (Dima's talk.py Pi is the other possible
+  source). Dima's siren.wav plays by full URL in the close ladder (deployed
+  22:05 09-02, first live play 04:21 09-03).
+- **Close-engagement cooldown takeover** (`DETER_CLOSE_TAKEOVER`, 15s): a
+  close/rapid engagement may take over the 60s shared cooldown when the
+  claim is >=15s stale — a live ladder refreshes it every few seconds, so a
+  stale claim is a dead hand (09-03 00:53:24 entered in silence on exactly
+  this). Far engagements never take over. Validated on the night's frames
+  (scratchpad test: stale->fires, fresh->blocked, far->blocked) and by
+  evaluate_deter replay of fire-20260903-042136 (no regression).
+- **Restart the patrol ONLY via cron or a detached shell.** A patrol started
+  from a Claude-session-tracked command dies when the harness reaps the task
+  (killed the 02:24 instance last night, and tethered the 08:07 one this
+  morning). Kill the patrol and let the */5 cron bring it back.
+- ocp-detector restarted 08:07 (Dave's sudo) on the HA-local sound base;
+  needs ONE more restart to pick up the takeover gate once committed.
 
 ## Night of 08-30/31: FIRST ENTRY under the armed system -- see
 `watch/REVIEW-2026-08-31-night.md`. The stray crossed gate-to-flap in ~4s at
