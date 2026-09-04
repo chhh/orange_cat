@@ -34,9 +34,11 @@ the camera speakers — tests included — unless Dave has warned Dima first.
   Dave approved). When the escalation's vanished-at-the-flap branch declares
   an entry -- which only happens after a tracked orange engagement, so a
   resident can never trigger it -- wait DETER_INDOOR_DELAY (2s, clears the
-  flap), then play DETER_INDOOR_SOUND (dog_growl.wav) at
-  DETER_INDOOR_VOLUME (0.4) on media_player.garage_speaker = the Cat Door
-  INSIDE speaker. Kill switch: DETER_INDOOR=0 + restart. ENTITY TRAP,
+  flap), then play the indoor PAIR in order (DETER_INDOOR_SOUNDS):
+  dog_growl.wav, then Dima's own voice Poshel-Otsuda.wav (full URL off the
+  8081 fallback -- NOT in the HA-staged set), both at DETER_INDOOR_VOLUME
+  (0.4) on media_player.garage_speaker = the Cat Door INSIDE speaker. The
+  8081 soundserver is therefore LOAD-BEARING again for the voice clip. Kill switch: DETER_INDOOR=0 + restart. ENTITY TRAP,
   verified against HA: media_player.nursery_speaker (no _2) is a NEST MINI
   in the family's room -- never a deterrent target; nursery_speaker_2 is
   the outside cat-door speaker, garage_speaker the inside one.

@@ -620,9 +620,19 @@ def _far_opener():
 #   media_player.nursery_speaker    = a NEST MINI in the family's room. Never.
 INDOOR_ENABLED = os.getenv("DETER_INDOOR", "1") == "1"
 INDOOR_SPEAKER = os.getenv("DETER_INDOOR_SPEAKER", "media_player.garage_speaker")
-INDOOR_SOUND = os.getenv("DETER_INDOOR_SOUND", "dog_growl.wav")  # quiet, non-siren
+# Played in order, one gap apart: an animal threat, then the strongest
+# startle on record -- a human voice (Dima's own, 08-29: the window "HEY" is
+# the only thing that has ever emptied the patio instantly), and a voice is
+# at its most credible coming from INSIDE the house. The voice clip is not
+# in the HA-staged set, so it plays by full URL off the odd-fellow fallback
+# server; indoors there is no race, so the tunnel fetch costs nothing.
+INDOOR_SOUNDS = [s.strip() for s in os.getenv(
+    "DETER_INDOOR_SOUNDS",
+    "dog_growl.wav,http://192.168.7.4:8081/Poshel-Otsuda.wav"
+).split(",") if s.strip()]
 INDOOR_VOLUME = float(os.getenv("DETER_INDOOR_VOLUME", "0.4"))
 INDOOR_DELAY = float(os.getenv("DETER_INDOOR_DELAY", "2.0"))
+INDOOR_GAP = float(os.getenv("DETER_INDOOR_GAP", "1.0"))
 
 
 # How consider() tells the escalation thread what to play next. `ladder` is
@@ -764,15 +774,21 @@ def escalate(grab_frames, log=_flush_print, already_played=1, ladder=None,
                 # never trigger it. Delay lets it clear the flap first.
                 if INDOOR_ENABLED:
                     time.sleep(INDOOR_DELAY)
-                    if not _aborted():
+                    for i, snd in enumerate(INDOOR_SOUNDS):
+                        if _aborted():
+                            break
+                        if i:
+                            time.sleep(INDOOR_GAP)
                         try:
-                            _play(INDOOR_SOUND, log, volume=INDOOR_VOLUME,
+                            _play(snd, log, volume=INDOOR_VOLUME,
                                   entity=INDOOR_SPEAKER)
-                            log(f"  indoor: PLAYED {INDOOR_SOUND} at volume "
+                            log(f"  indoor: PLAYED {snd} at volume "
                                 f"{INDOOR_VOLUME:.1f} on the INSIDE speaker "
                                 f"({INDOOR_SPEAKER})")
                         except Exception as exc:
-                            log(f"  indoor: playback FAILED ({exc})")
+                            log(f"  indoor: playback FAILED ({exc}) -- "
+                                f"stopping the indoor pair")
+                            break
             else:
                 log(f"  escalation: target gone (orange={orange}) -- "
                     f"stopping after {played} sound(s)")
