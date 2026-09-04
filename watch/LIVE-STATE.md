@@ -27,8 +27,19 @@ the camera speakers — tests included — unless Dave has warned Dima first.
   from a Claude-session-tracked command dies when the harness reaps the task
   (killed the 02:24 instance last night, and tethered the 08:07 one this
   morning). Kill the patrol and let the */5 cron bring it back.
-- ocp-detector restarted 08:07 (Dave's sudo) on the HA-local sound base;
-  needs ONE more restart to pick up the takeover gate once committed.
+- ocp-detector restarted 08:07 (Dave's sudo) on the HA-local sound base,
+  again 08:23 on the takeover gate, and needs one more for the indoor
+  response below.
+- **INDOOR ENTRY RESPONSE armed for 09-03 night** (Dima proposed it 18:18;
+  Dave approved). When the escalation's vanished-at-the-flap branch declares
+  an entry -- which only happens after a tracked orange engagement, so a
+  resident can never trigger it -- wait DETER_INDOOR_DELAY (2s, clears the
+  flap), then play DETER_INDOOR_SOUND (dog_growl.wav) at
+  DETER_INDOOR_VOLUME (0.4) on media_player.garage_speaker = the Cat Door
+  INSIDE speaker. Kill switch: DETER_INDOOR=0 + restart. ENTITY TRAP,
+  verified against HA: media_player.nursery_speaker (no _2) is a NEST MINI
+  in the family's room -- never a deterrent target; nursery_speaker_2 is
+  the outside cat-door speaker, garage_speaker the inside one.
 
 ## Night of 08-30/31: FIRST ENTRY under the armed system -- see
 `watch/REVIEW-2026-08-31-night.md`. The stray crossed gate-to-flap in ~4s at

@@ -605,6 +605,26 @@ def _far_opener():
     return FAR_OPENERS[time.localtime().tm_yday % len(FAR_OPENERS)]
 
 
+# INDOOR ENTRY RESPONSE (Dima's suggestion, 2026-09-03 18:18: "you can also
+# try playing a sound at the cat as it enters through the flap. Just don't
+# play the siren on the inside camera"). Fired ONLY from the escalation's
+# vanished-at-the-flap branch, which by construction follows a tracked
+# orange engagement -- never on inside motion alone; the residents use that
+# flap too. The delay lets the cat clear the flap first (the in_flap welfare
+# rule stands: no startle mid-opening).
+#
+# ENTITY TRAP, verified 2026-09-03 against HA states -- three near-identical
+# names, one of which must NEVER play a deterrent:
+#   media_player.nursery_speaker_2  = Cat Door OUTSIDE speaker (config.HA_SPEAKER)
+#   media_player.garage_speaker     = Cat Door INSIDE speaker  (this one)
+#   media_player.nursery_speaker    = a NEST MINI in the family's room. Never.
+INDOOR_ENABLED = os.getenv("DETER_INDOOR", "1") == "1"
+INDOOR_SPEAKER = os.getenv("DETER_INDOOR_SPEAKER", "media_player.garage_speaker")
+INDOOR_SOUND = os.getenv("DETER_INDOOR_SOUND", "dog_growl.wav")  # quiet, non-siren
+INDOOR_VOLUME = float(os.getenv("DETER_INDOOR_VOLUME", "0.4"))
+INDOOR_DELAY = float(os.getenv("DETER_INDOOR_DELAY", "2.0"))
+
+
 # How consider() tells the escalation thread what to play next. `ladder` is
 # the ordered list of repeats AFTER the opener; `rapid` compresses the 2-3s
 # escalation interval to ~1s. CLOSE-RANGE DOCTRINE (09-01): on the breach at
@@ -621,8 +641,12 @@ _FIRE_PLAN = {"ladder": None, "rapid": False}
 PERSON_DIR = os.getenv("DETER_PERSON_DIR", "/home/david/ocp-watch/person-evidence")
 
 
-def _play(name, log=print, volume=1.0):
+def _play(name, log=print, volume=1.0, entity=None):
     """Play one sound, by URL, through the camera speaker.
+
+    `entity` overrides the target speaker (default config.HA_SPEAKER, the
+    OUTSIDE cat-door camera). The only sanctioned override is INDOOR_SPEAKER
+    -- see the entity-trap comment above its definition.
 
     `volume` is set explicitly on EVERY play (the speaker supports
     volume_set; verified 2026-08-31): the far opener plays reduced, the
@@ -644,8 +668,9 @@ def _play(name, log=print, volume=1.0):
         with urllib.request.urlopen(req, timeout=timeout):
             pass
 
+    target = entity or config.HA_SPEAKER
     try:
-        _svc("volume_set", {"entity_id": config.HA_SPEAKER,
+        _svc("volume_set", {"entity_id": target,
                             "volume_level": max(0.0, min(1.0, volume))})
     except Exception as exc:
         # A failed volume call must not silence the fire itself.
@@ -655,7 +680,7 @@ def _play(name, log=print, volume=1.0):
     # audibly playing -- and the false failure killed the rest of the
     # ladder). 25s covers the longest file with margin; blocking through a
     # sound is fine, nothing else should be playing over it anyway.
-    _svc("play_media", {"entity_id": config.HA_SPEAKER,
+    _svc("play_media", {"entity_id": target,
                         "media_content_id": (name if name.startswith("http")
                                              else f"{SOUND_BASE}/{name}"),
                         "media_content_type": "music"}, timeout=25)
@@ -733,6 +758,21 @@ def escalate(grab_frames, log=_flush_print, already_played=1, ladder=None,
                                     "origin": "flap"}, fh)
                 except OSError:
                     pass
+                # Indoor entry response (Dima, 09-03): meet it on the other
+                # side. This branch only runs after a tracked orange
+                # engagement, so a resident coming through its own door can
+                # never trigger it. Delay lets it clear the flap first.
+                if INDOOR_ENABLED:
+                    time.sleep(INDOOR_DELAY)
+                    if not _aborted():
+                        try:
+                            _play(INDOOR_SOUND, log, volume=INDOOR_VOLUME,
+                                  entity=INDOOR_SPEAKER)
+                            log(f"  indoor: PLAYED {INDOOR_SOUND} at volume "
+                                f"{INDOOR_VOLUME:.1f} on the INSIDE speaker "
+                                f"({INDOOR_SPEAKER})")
+                        except Exception as exc:
+                            log(f"  indoor: playback FAILED ({exc})")
             else:
                 log(f"  escalation: target gone (orange={orange}) -- "
                     f"stopping after {played} sound(s)")
