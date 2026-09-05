@@ -344,7 +344,8 @@ def consider(grab_frames, log=_flush_print, live_track=None):
         _grew = (len(geom) >= 2 and geom[0][1] > 0
                  and height >= 1.4 * geom[0][1] and not _x_retreating)
         closing = (_x_closing or _grew) and height >= APPROACH_HEIGHT_PCT
-        if height < MIN_HEIGHT_PCT and not closing:
+        far = height < MIN_HEIGHT_PCT and not closing
+        if far and not URGENT_OPENER:
             # N2 (2026-08-31): a far cat is no longer a hold. On 08-31 the
             # stray crossed the patio in ~4s; "too far" spent the only shot
             # waiting for proof it was coming toward the door it always comes
@@ -353,13 +354,17 @@ def consider(grab_frames, log=_flush_print, live_track=None):
             opener, volume = _far_opener(), FAR_VOLUME
             ladder = SOUND_SEQUENCE[:]
         else:
-            # Close engagement: a race, not a negotiation (09-01 breach:
-            # entry 3s after the drill). Novel siren first (Dima's pick,
-            # 09-02 -- the cat has never heard it), then harshest repeat,
-            # ~1s spacing.
+            # Close engagement OR urgent-opener mode (09-04): a race, not a
+            # negotiation (09-01 breach: entry 3s after the drill). Short loud
+            # drill first (opener, already set above at vol 1.0), then novel
+            # siren (Dima's pick, 09-02), then harshest repeat, ~1s spacing.
             ladder = [SIREN] + SOUND_SEQUENCE[-1:] + SOUND_SEQUENCE[1:-1]
             rapid = True
-            if closing and height < MIN_HEIGHT_PCT:
+            if far:
+                log(f"  deterrent: URGENT opener -- cat reads far "
+                    f"(height {height:.1f}%) but this cat dashes to the flap in "
+                    f"~6s; opening with the drill, not a slow growl. {detail}")
+            elif closing and height < MIN_HEIGHT_PCT:
                 log(f"  deterrent: cat is CLOSING on the door "
                     f"(x {geom[0][0]}->{geom[-1][0]}, height {height:.1f}%) -- firing now so "
                     f"the sound lands as it arrives. {detail}")
@@ -599,6 +604,20 @@ FAR_VOLUME = float(os.getenv("DETER_FAR_VOLUME", "0.6"))
 FAR_OPENERS = [s.strip() for s in os.getenv(
     "DETER_FAR_OPENERS", "angrycat_full.mp3,guarddogs_far.mp3"
 ).split(",") if s.strip()]
+
+# URGENT OPENER (2026-09-04, Dave). The graded design opened a FAR cat with a
+# long, quiet growl (guarddogs_far is 10s, angrycat 12.5s) so a distant animal
+# gets a credible warning rather than a startle. But this cat does not linger
+# at range -- it dashes gate-to-wall-to-flap in ~6s, and on 09-04 it read as
+# "far" (9.7% height, small at the frame edge) the whole way in. The 10s far
+# opener then MONOPOLISED the speaker -- _play blocks until a sound finishes --
+# so no louder sound could follow during the entire entry, and the one sound
+# was a quiet growl the cat ignored. With this on, a "far" read opens with the
+# short, loud drill and the rapid ladder instead, so the response is sharp
+# immediately and can escalate inside the 6s window. Set to 0 to restore the
+# graded far opener. (Sounds are inaudible indoors -- Dima 09-03 -- so "loud"
+# costs the family nothing.) Supersedes the far half of [[graded-threat]].
+URGENT_OPENER = os.getenv("DETER_URGENT_OPENER", "1") == "1"
 
 
 def _far_opener():

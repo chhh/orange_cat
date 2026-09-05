@@ -30,6 +30,16 @@ the camera speakers — tests included — unless Dave has warned Dima first.
 - ocp-detector restarted 08:07 (Dave's sudo) on the HA-local sound base,
   again 08:23 on the takeover gate, and needs one more for the indoor
   response below.
+- **URGENT OPENER armed for 09-04 night** (Dave). Any orange engagement now
+  opens with the short loud DRILL and the rapid ladder, even when the cat
+  reads "far" -- the 09-04 entry showed this cat dashes gate-to-flap in ~6s
+  while reading as far (9.7% height), and the old 10s quiet far-opener both
+  mismatched it and MONOPOLISED the speaker (_play blocks until a sound ends)
+  so nothing louder could follow during entry. DETER_URGENT_OPENER=0 restores
+  the graded far growl. Supersedes the far half of the graded-threat design.
+  Validated: isolated far-frame test (drill+rapid with flag on, growl with it
+  off), and evaluate_deter replay of the 09-04 entry (fires) and exit
+  (still suppressed).
 - **INDOOR ENTRY RESPONSE armed for 09-03 night** (Dima proposed it 18:18;
   Dave approved). When the escalation's vanished-at-the-flap branch declares
   an entry -- which only happens after a tracked orange engagement, so a
