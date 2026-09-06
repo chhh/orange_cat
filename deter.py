@@ -422,6 +422,7 @@ import shutil
 import subprocess
 
 SEG_DIR = os.getenv("DETER_SEG_DIR", "/dev/shm/ocp/outside")
+INSIDE_SEG_DIR = os.getenv("DETER_INSIDE_SEG_DIR", "/dev/shm/ocp/inside")
 REACT_DIR = os.getenv("DETER_REACT_DIR", "/home/david/ocp-watch/reactions")
 REACT_AFTER = float(os.getenv("DETER_REACT_AFTER", "50"))
 
@@ -437,8 +438,12 @@ def _segments():
     return sorted(out)
 
 
-def capture_reaction(tag, after=None, log=_flush_print):
+def capture_reaction(tag, after=None, log=_flush_print, seg_dir=None):
     """Save a clip spanning the seconds before and after a deterrent fire.
+
+    `seg_dir` chooses which camera's rolling buffer to record (default the
+    outside cat-door camera); pass INSIDE_SEG_DIR to record the inside camera,
+    e.g. the cat's reaction to the indoor entry response.
 
     ffmpeg is writing into these files continuously, so a segment must only be
     copied once it has STOPPED changing -- copying mid-write yields a truncated
@@ -447,6 +452,7 @@ def capture_reaction(tag, after=None, log=_flush_print):
     take a segment only when it has been stable across two polls.
     """
     after = REACT_AFTER if after is None else after
+    seg_dir = SEG_DIR if seg_dir is None else seg_dir
     work = os.path.join(REACT_DIR, tag)
     os.makedirs(work, exist_ok=True)
 
@@ -465,7 +471,7 @@ def capture_reaction(tag, after=None, log=_flush_print):
 
     def stamp():
         out = {}
-        for p in glob.glob(os.path.join(SEG_DIR, "*.mp4")):
+        for p in glob.glob(os.path.join(seg_dir, "*.mp4")):
             try:
                 st = os.stat(p)
                 out[p] = (st.st_mtime, st.st_size)
@@ -649,7 +655,7 @@ INDOOR_SOUNDS = [s.strip() for s in os.getenv(
     "DETER_INDOOR_SOUNDS",
     "dog_growl.wav,http://192.168.7.4:8081/Poshel-Otsuda.wav"
 ).split(",") if s.strip()]
-INDOOR_VOLUME = float(os.getenv("DETER_INDOOR_VOLUME", "0.4"))
+INDOOR_VOLUME = float(os.getenv("DETER_INDOOR_VOLUME", "0.6"))
 INDOOR_DELAY = float(os.getenv("DETER_INDOOR_DELAY", "2.0"))
 INDOOR_GAP = float(os.getenv("DETER_INDOOR_GAP", "1.0"))
 
@@ -787,6 +793,16 @@ def escalate(grab_frames, log=_flush_print, already_played=1, ladder=None,
                                     "origin": "flap"}, fh)
                 except OSError:
                     pass
+                # Record the INSIDE camera on every recognized entry (09-05),
+                # independent of whether a sound plays -- the eviction footage
+                # (09-05: the cat sat calm through the growl and voice) was
+                # otherwise only saved by a lucky manual grab before the buffer
+                # wrapped. Threaded so it never blocks the indoor sounds below.
+                threading.Thread(
+                    target=capture_reaction,
+                    args=(f"inside-{time.strftime('%Y%m%d-%H%M%S')}",),
+                    kwargs={"seg_dir": INSIDE_SEG_DIR, "log": log},
+                    daemon=True).start()
                 # Indoor entry response (Dima, 09-03): meet it on the other
                 # side. This branch only runs after a tracked orange
                 # engagement, so a resident coming through its own door can

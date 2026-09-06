@@ -47,7 +47,12 @@ the camera speakers — tests included — unless Dave has warned Dima first.
   flap), then play the indoor PAIR in order (DETER_INDOOR_SOUNDS):
   dog_growl.wav, then Dima's own voice Poshel-Otsuda.wav (full URL off the
   8081 fallback -- NOT in the HA-staged set), both at DETER_INDOOR_VOLUME
-  (0.4) on media_player.garage_speaker = the Cat Door INSIDE speaker. The
+  (0.6 as of 09-05 -- was 0.4; louder test of whether the 09-05 calm was
+  about volume; Dima should be warned it is louder) on
+  media_player.garage_speaker = the Cat Door INSIDE speaker. Every recognized
+  entry also auto-records the INSIDE camera to reactions/inside-<stamp>.mp4
+  (DETER_INSIDE_SEG_DIR), so the eviction reaction is never lost to a buffer
+  wrap again. The
   8081 soundserver is therefore LOAD-BEARING again for the voice clip. Kill switch: DETER_INDOOR=0 + restart. ENTITY TRAP,
   verified against HA: media_player.nursery_speaker (no _2) is a NEST MINI
   in the family's room -- never a deterrent target; nursery_speaker_2 is
