@@ -355,15 +355,23 @@ def consider(grab_frames, log=_flush_print, live_track=None):
             ladder = SOUND_SEQUENCE[:]
         else:
             # Close engagement OR urgent-opener mode (09-04): a race, not a
-            # negotiation (09-01 breach: entry 3s after the drill). Short loud
-            # drill first (opener, already set above at vol 1.0), then novel
-            # siren (Dima's pick, 09-02), then harshest repeat, ~1s spacing.
-            ladder = [SIREN] + SOUND_SEQUENCE[-1:] + SOUND_SEQUENCE[1:-1]
+            # negotiation (09-01 breach: entry 3s after the drill). Fire the
+            # startle immediately, then escalate ~1s apart.
             rapid = True
+            if SIREN_OPENS:
+                # Siren onset opens (09-06, Dima's hypothesis); drill is now
+                # the first repeat, then harshest, then dogs.
+                opener, volume = SIREN_OPEN, 1.0
+                ladder = ([SOUND_SEQUENCE[0]] + SOUND_SEQUENCE[-1:]
+                          + SOUND_SEQUENCE[1:-1])
+            else:
+                # Short loud drill first (opener, set above at vol 1.0), then
+                # full siren, then harshest repeat.
+                ladder = [SIREN] + SOUND_SEQUENCE[-1:] + SOUND_SEQUENCE[1:-1]
             if far:
                 log(f"  deterrent: URGENT opener -- cat reads far "
                     f"(height {height:.1f}%) but this cat dashes to the flap in "
-                    f"~6s; opening with the drill, not a slow growl. {detail}")
+                    f"~6s; opening now, not with a slow growl. {detail}")
             elif closing and height < MIN_HEIGHT_PCT:
                 log(f"  deterrent: cat is CLOSING on the door "
                     f"(x {geom[0][0]}->{geom[-1][0]}, height {height:.1f}%) -- firing now so "
@@ -597,6 +605,21 @@ SOUND_SEQUENCE = [s.strip() for s in os.getenv(
 SIREN = os.getenv(
     "DETER_SIREN",
     "http://192.168.1.133:8123/local/sounds/archived/siren.wav")
+
+# SIREN AS OPENER (2026-09-06, Dima's hypothesis / Dave). Dima built the siren
+# to be very startling and believes it should deter -- but it has only ever
+# played as the ladder's SECOND sound, ~3s after the drill, arriving as the
+# cat is already in the flap (drill playback + the rapid re-check eat the gap;
+# 09-05/06 both entries: siren logged at the same second as VANISHED AT FLAP).
+# So the siren has never had a fair shot at an APPROACHING cat. This opens a
+# close/urgent engagement with the siren's startling ONSET instead of the
+# drill, fired the instant the cat is seen. It is a 1.6s cut of the siren
+# (siren_open.wav, served off the 8081 fallback) -- short so it does not
+# block the speaker the way the full 6s siren would. The drill becomes the
+# first repeat. Set DETER_SIREN_OPENS=0 to restore the drill opener.
+SIREN_OPENS = os.getenv("DETER_SIREN_OPENS", "1") == "1"
+SIREN_OPEN = os.getenv("DETER_SIREN_OPEN",
+                       "http://192.168.7.4:8081/siren_open.wav")
 
 # GRADED THREAT (Dave's design, 2026-08-31). A drill blast from a not-loud
 # speaker at a cat most of a patio away is not credible; a sustained growl is

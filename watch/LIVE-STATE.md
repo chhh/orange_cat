@@ -30,6 +30,16 @@ the camera speakers — tests included — unless Dave has warned Dima first.
 - ocp-detector restarted 08:07 (Dave's sudo) on the HA-local sound base,
   again 08:23 on the takeover gate, and needs one more for the indoor
   response below.
+- **SIREN OPENS as of 09-06 night** (Dima's hypothesis / Dave). A close/urgent
+  engagement now opens with a 1.6s cut of the siren's startling ONSET
+  (sounds/siren_open.wav, served off the 8081 fallback) fired on first sight,
+  then the drill, then catsfight, then dogs. Rationale: the full siren only
+  ever played as the ladder's 2nd sound, arriving as the cat was already in
+  the flap (09-05/06 both entries); it never had a fair shot at an APPROACHING
+  cat. Short so it does not block the speaker like the full 6s siren would.
+  DETER_SIREN_OPENS=0 restores the drill opener. Validated: armed-path test
+  (opener=siren_open, ladder=[drill,catsfight,dogs]) + evaluate_deter replay
+  of the 09-06 entry (fires) and exit (suppressed).
 - **URGENT OPENER armed for 09-04 night** (Dave). Any orange engagement now
   opens with the short loud DRILL and the rapid ladder, even when the cat
   reads "far" -- the 09-04 entry showed this cat dashes gate-to-flap in ~6s
