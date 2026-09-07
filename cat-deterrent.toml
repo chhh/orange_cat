@@ -2,7 +2,9 @@
 # stay in .env -- everything else lives here.
 
 [server]
-host = "192.168.7.1"        # UDM over WireGuard (odd-fellow is remote)
+host = "192.168.7.1"        # the UDM. Works from BOTH houses: over the tunnel
+                            # from Dave's, and via Dima's LAN gateway on-site
+                            # (verified 2026-09-07: RTSPS serves h264 either way)
 buffer_mode = "segments"    # segments | decoded | off
 bg_refresh_seconds = 300
 

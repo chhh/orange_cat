@@ -33,6 +33,7 @@ import time
 sys.path.insert(0, "/home/david/projects/ocp")
 
 import animal
+import config
 import detect
 
 # The cat flap, in frame coordinates (1024x576 outside camera), measured from
@@ -569,7 +570,11 @@ ESC_MAX_SOUNDS = int(os.getenv("DETER_ESC_MAX_SOUNDS", "6"))
 # 2026-08-27 21:48 (HA hit our server from 192.168.1.133 and the speaker went
 # playing -> idle). This means the detector owns its own sounds instead of
 # depending on files in someone else's config directory.
-SOUND_BASE = os.getenv("DETER_SOUND_BASE", "http://192.168.7.4:8081")
+# The 8081 fallback server runs on THIS box, whose address differs by house
+# (see config.self_host). Never hardcode it again.
+_SELF = config.SELF_SOUND_BASE
+
+SOUND_BASE = os.getenv("DETER_SOUND_BASE", _SELF)
 
 # A kill switch. The escalation runs in a daemon thread and would otherwise
 # play its full sequence no matter what -- so "I am watching it" would mean
@@ -618,8 +623,7 @@ SIREN = os.getenv(
 # block the speaker the way the full 6s siren would. The drill becomes the
 # first repeat. Set DETER_SIREN_OPENS=0 to restore the drill opener.
 SIREN_OPENS = os.getenv("DETER_SIREN_OPENS", "1") == "1"
-SIREN_OPEN = os.getenv("DETER_SIREN_OPEN",
-                       "http://192.168.7.4:8081/siren_open.wav")
+SIREN_OPEN = os.getenv("DETER_SIREN_OPEN", f"{_SELF}/siren_open.wav")
 
 # GRADED THREAT (Dave's design, 2026-08-31). A drill blast from a not-loud
 # speaker at a cat most of a patio away is not credible; a sustained growl is
@@ -676,7 +680,7 @@ INDOOR_SPEAKER = os.getenv("DETER_INDOOR_SPEAKER", "media_player.garage_speaker"
 # server; indoors there is no race, so the tunnel fetch costs nothing.
 INDOOR_SOUNDS = [s.strip() for s in os.getenv(
     "DETER_INDOOR_SOUNDS",
-    "dog_growl.wav,http://192.168.7.4:8081/Poshel-Otsuda.wav"
+    f"dog_growl.wav,{_SELF}/Poshel-Otsuda.wav"
 ).split(",") if s.strip()]
 INDOOR_VOLUME = float(os.getenv("DETER_INDOOR_VOLUME", "0.6"))
 INDOOR_DELAY = float(os.getenv("DETER_INDOOR_DELAY", "2.0"))
