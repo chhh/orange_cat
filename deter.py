@@ -321,7 +321,12 @@ def consider(grab_frames, log=_flush_print, live_track=None):
         # itself, which is cleaner conditioning than withholding and letting
         # it eat. On 08-31 we held fire here and it ate for 16 minutes. "Even
         # if the cat slips in the house, it will not be happy."
-        if confirmed_orange and _in_window():
+        # ...but NOT on the way out. A cat leaving through the flap is
+        # geometrically "into the flap" too, and this branch sits ABOVE the
+        # exiting check below -- so without this guard the barrier spray would
+        # fire on every exit, at a cat that has already eaten. Exits are the
+        # one case where firing teaches only that the deterrent is harmless.
+        if confirmed_orange and _in_window() and origin != "flap":
             if _fire_water_async(log, delay=0.0, why="cat INTO the flap",
                                  sustain=WATER_FLAP_SUSTAIN):
                 log(f"  deterrent: cat is INTO the flap (max "
