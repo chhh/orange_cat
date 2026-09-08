@@ -763,6 +763,10 @@ WATER_COOLDOWN = float(os.getenv("DETER_WATER_COOLDOWN", "8"))
 
 _water_fast_until = 0.0
 _water_last = 0.0
+# water_warm() must interrupt the keepalive's sleep. A bare sleep(30)
+# means a first-sight warm does nothing for up to 30s -- precisely the
+# seconds it exists to buy (found by test, 09-07).
+_water_wake = threading.Event()
 
 
 def _water_svc(service, timeout=20):
@@ -788,17 +792,20 @@ def water_warm(seconds=None):
     global _water_fast_until
     _water_fast_until = max(_water_fast_until,
                             time.time() + (seconds or WATER_FAST_FOR))
+    _water_wake.set()          # cut the keepalive's sleep short
 
 
 def _water_keepalive_loop():
     while True:
-        gap = WATER_FAST if time.time() < _water_fast_until else WATER_KEEPALIVE
+        fast = time.time() < _water_fast_until
         try:
-            if _in_window() or time.time() < _water_fast_until:
+            if _in_window() or fast:
                 _water_svc("turn_off", timeout=25)
         except Exception:
             pass          # a missed ping costs latency, never correctness
-        time.sleep(gap)
+        gap = WATER_FAST if time.time() < _water_fast_until else WATER_KEEPALIVE
+        _water_wake.wait(gap)
+        _water_wake.clear()
 
 
 def fire_water(log=_flush_print, delay=0.0, why=""):
