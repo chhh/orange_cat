@@ -1,39 +1,75 @@
-# What is live right now — 2026-09-07 19:35 (FIRST WATER NIGHT)
+# What is live right now — 2026-09-08 08:05
 
-Read this before changing anything. **The deterrent is armed AND THE WATER IS
-LIVE.** Dave's standing rule still holds: no sound through the camera speakers,
-tests included, unless Dave has warned Dima first. The same now goes for water.
+Read this before changing anything. **Water is armed and will fire tonight
+without anyone starting it.** Standing rule: no camera-speaker playback and no
+water, tests included, unless Dave has warned Dima first.
 
-## Water, armed tonight for the first time (deter.py 2151c79, 2689a14)
+## The one thing a fresh session MUST do
 
-Dima's SONOFF SWV-ZFU went in on the patio 09-07; Dave was on-site and tested
-it. `DETER_WATER=1` in `.env`; kill switch is `DETER_WATER=0` plus a patrol
-restart (cron only — never a session-tracked start).
+**Re-arm the four watches.** They are Monitors and they died with the session
+that started them. Everything else on this page survives a reboot on its own;
+these do not, and the health watch is what caught both recorders wedged on
+09-07 (79 minutes blind, discovered by luck).
 
-- **Fires at EVERY position, including a cat part-way through the flap.** The
-  SOUND hold there still stands; the water does not (Dave: "even if the cat
-  slips in the house, it will not be happy"). New `consider()` return value:
-  `in_flap_water`.
-- **Sound LEADS water by 1.7s** (`DETER_WATER_LEAD`) so the sound conditions as
-  a predictor of the water. The channels have opposite latencies (~1.2s speaker
-  vs 0.29s warm valve), so firing both on one line would land water FIRST.
-- **Burst**: 3 pulses, ~0.6s open each, ~3.0s end to end. Every Zigbee command
-  costs ~0.4s, so the command latency IS the pulse width.
-- **Keepalive**: pings the valve every 30s in the night window, ~1s from first
-  sight. The valve is a battery EndDevice: cold 1.7-2.0s, warm 0.29s.
-- **Three cutoffs, and only three**: fire_water's `finally`; HA
-  `automation.cat_sprayer_failsafe_off` (10s after any on, and on HA restart);
-  and ocp-71's external watcher (valve "on" >15s). There is NO device-side
-  timer — no ZHA quirk is applied, and on the ZFU the standard on_time is inert
-  anyway. If HA dies mid-burst, only the third layer catches it.
+    watches/w-patrol.sh   engagements, deterrent decisions, water, errors
+    watches/w-health.sh   patrol dead, on battery, tunnel, sound server,
+                          detector, stale segments, heartbeat gap
+    watches/w-flood.sh    valve stuck open >15s, or HA dark while it was ON
+    plus a 06:45 timer to write the night report
 
-## TWO SESSIONS are working this project — agreed division 09-07
+Self-test each after arming (they are worthless unarmed and look identical):
+append a line containing `OCPWATCH-SELFTEST` to patrol.log, and
+`touch ~/ocp-watch/.health-selftest ~/ocp-watch/.flood-selftest`.
 
-`ocp-71` owns the patrol.log/health watches and the 7am report; `ocp-d3` owns
-the valve, HA, `.env`, ocp-detector.service and deploy restarts. Neither
-touches the other's domain without asking Dave. On a genuine flood, fastest
-hand closes the valve and tells the other immediately.
+## Armed and self-sustaining (no action needed)
 
+| | |
+|---|---|
+| patrol.py | cron `*/5` re-arms it after any death; **restart ONLY via cron** |
+| ocp-detector | systemd, `Restart=always`, `Wants=` (not `Requires=`) the tunnel |
+| recorder watchdog | kills any ffmpeg producing nothing for 30s; ~40s recovery |
+| deterrent window | 22:00-06:00, enforced in `consider()` |
+| valve warming | first sight only — nothing to arm at dusk |
+| tunnel | `wg-quick@wg0` enabled at boot |
+
+## What the water does (deter.py, deployed 37910ca)
+
+| situation | sound | water |
+|---|---|---|
+| orange cat at range | opener + rapid ladder | 3 pulses, ~2.2/3.4/4.6s after the decision |
+| at or into the flap | held | ONE sustained 2s barrier |
+| exiting, still in the opening | held | held — "not out yet" |
+| exiting, clear of the flap (<15% overlap) | held | 3 pulses |
+| person in frame | hard stop | hard stop |
+
+Re-arm: water 8s, sound 60s (or 15s for a close engagement). After the cat has
+been inside, everything is quiet for 120s of no sighting.
+
+**Three cutoffs, all through Home Assistant.** `fire_water`'s `finally`; HA
+`automation.cat_sprayer_failsafe_off` (10s after any on); and the flood watch.
+There is NO device-side timer. If HA dies mid-burst nothing can close the
+valve remotely — the tap must be shut by hand.
+
+## Night of 09-07/08, the first water night
+
+One engagement 03:43, **no entry**, zero faults inside the window. The water
+startled the cat off the patio without touching it; it was still in frame 0.4s
+after the siren and vanished inside the 0.33s containing the first pulse.
+Report: `reports/Night-2026-09-08-report.html` and
+https://claude.ai/code/artifact/e70ab3bb-2701-48a7-b965-2c09efcb8da5
+
+Two approach routes, not one: gate (n=23) and right-hand (n=9). The right-hand
+lane is the WETTER one (56% vs 30% cross the wet zone), so pushing the cat off
+the gate route works in our favour. See [[the-corridor]].
+
+## Open
+
+- The watches should become systemd user units or cron jobs that notify Dave
+  directly, instead of dying with a Claude session. Not yet scoped.
+- Aim stays as it is; extending the throw was declined. Confirm coverage the
+  first time the cat is actually hit.
+- Whether the 1.7s sound lead still earns its place — the cat moved on the
+  water, not the siren.
 
 # What is live right now — 2026-09-03 09:00
 
