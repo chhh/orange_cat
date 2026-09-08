@@ -163,8 +163,14 @@
 <p>The fix watches the <em>output</em> instead of the process: any recorder producing nothing for 30 s is killed and respawned. Tested live against a SIGSTOPped recorder — caught at 30 s, recording again by 40. Seventy-nine minutes becomes forty seconds.</p>
 
 <h2>The pattern worth keeping</h2>
-<p>Three separate checks failed tonight, all the same way — each measured something <em>adjacent</em> to what mattered. The recorder supervisor measured a live pid when what mattered was fresh segments. The flood watch measured HA-reachability, and would have gone silent in precisely the scenario it existed for. And twice, a <code>ps | grep</code> matched its own command line and produced a phantom duplicate recorder and a self-killed shell.</p>
-<p>Every one of them looked green while being wrong, which is the only kind of failure that survives long enough to matter. The rule that falls out: <strong>ask what artefact proves the thing works — a fresh segment, a wet patch, a played sound — and measure that.</strong></p>
+<p>Three things went wrong in the same shape, and it is worth being exact about which were real, because they were not equivalent — <strong>and none of them happened while the system was armed and watching for the cat.</strong></p>
+<div class="timeline">
+<div class="tl-t">18:55</div><div class="tl-b"><strong>A genuine failure.</strong> The recorder supervisor measured a live pid when what mattered was fresh segments. 79 minutes blind — but before arming, and fixed before the window opened. <span class="tag loss">real</span></div>
+<div class="tl-t">~20:00</div><div class="tl-b"><strong>Not a failure.</strong> The flood watch measured HA-reachability and would have gone silent in precisely the scenario it existed for. Caught by reasoning and fixed before it was ever needed. <span class="tag hold">latent</span></div>
+<div class="tl-t">19:15+</div><div class="tl-b"><strong>My checking, not the system.</strong> <code>ps | grep</code> matching its own command line: a self-killed shell, a phantom "patrol is back up", a phantom duplicate recorder, an <code>illegal pid</code>. Three during setup, one at 04:35. <span class="tag hold">self-inflicted</span></div>
+</div>
+<p>So: one real system failure, pre-arm. One flaw caught in advance. And a recurring error in my own verification. Grouping them as "three checks failed tonight" flattened three different things into one tidy pattern — which is the kind of tidiness that should invite suspicion, and did.</p>
+<p>The shared shape is still worth keeping, because each measured something <em>adjacent</em> to what mattered and each looked green while being wrong. The rule: <strong>ask what artefact proves the thing works — a fresh segment, a wet patch, a played sound — and measure that.</strong></p>
 
 <h2>My errors</h2>
 <ul class="plain">
