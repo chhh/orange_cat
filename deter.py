@@ -343,10 +343,27 @@ def consider(grab_frames, log=_flush_print, live_track=None):
             f"back inside. {detail}")
         return "at_flap"
     if origin == "flap":
+        # Water, but only once it is properly out. No geometry at all means we
+        # cannot tell where it is, which is not the same as "clear" -- hold.
+        recent_exit = commit_seq[-FLAP_RECENT:] if commit_seq else []
+        clear = bool(recent_exit) and max(recent_exit) < WATER_EXIT_CLEAR
+        if WATER_EXIT and confirmed_orange and _in_window() and clear:
+            if _fire_water_async(log, delay=0.0,
+                                 why="exit, clear of the flap"):
+                log(f"  deterrent: EXITING and CLEAR of the flap "
+                    f"(max {max(recent_exit):.0%} of box in the zone, need "
+                    f"under {WATER_EXIT_CLEAR:.0%}) -- no sound, but WATER: "
+                    f"a soaking at this door still teaches. {detail}")
+                return "exit_water"
+        held = ("" if clear else
+                f" Water held: {max(recent_exit):.0%} of the box is still in "
+                f"the flap zone (need under {WATER_EXIT_CLEAR:.0%}) -- not "
+                f"out yet." if recent_exit else
+                " Water held: no box, so its position is unknown.")
         log(f"  deterrent: EXITING -- this visit was first seen at the flap, "
             f"so the cat came OUT of the door with the meal already eaten. A "
             f"sound now cannot deter and only teaches it the noise is "
-            f"harmless -- standing down. {detail}")
+            f"harmless -- standing down.{held} {detail}")
         return "exiting"
     opener, volume = SOUND_SEQUENCE[0], 1.0
     # Default ladder: continue past the drill. Close engagements override
@@ -762,6 +779,22 @@ WATER_GAP = float(os.getenv("DETER_WATER_GAP", "0.1"))
 # Water through an open flap lands in Dima's GARAGE, not the house (Dave,
 # 09-07), which is why sustained is acceptable here.
 WATER_FLAP_SUSTAIN = float(os.getenv("DETER_WATER_FLAP_SUSTAIN", "2.0"))
+
+# EXITS GET WATER TOO (Dave, 09-07), reversing the doctrine that has held for
+# sound. A sound on the way out teaches only that the deterrent is harmless --
+# the meal is already gone. A soaking is different: it is an unpleasant thing
+# that happens AT THIS DOOR, and it does not need to prevent anything to teach
+# that. Sound stays suppressed on exits; only water fires.
+#
+# But ONLY once the cat is CLEAR of the opening ("outside the flap, not
+# halfway out" -- Dave). A cat wearing the flap can thrash against the
+# mechanism, and a spray at a half-open flap goes into the garage. The
+# entering branch above already returns before we get here whenever the cat is
+# >= FLAP_COMMIT (0.5) into the zone, so reaching this code means it is at
+# most partly overlapping -- not enough. This threshold is much stricter: the
+# box must barely touch the flap zone at all.
+WATER_EXIT = os.getenv("DETER_WATER_EXIT", "1") == "1"
+WATER_EXIT_CLEAR = float(os.getenv("DETER_WATER_EXIT_CLEAR", "0.15"))
 
 # Sound must LEAD the water, so the sound becomes a signal that PREDICTS it --
 # the speaker reaches the whole patio, the water only reaches where it is
