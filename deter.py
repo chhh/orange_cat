@@ -322,7 +322,8 @@ def consider(grab_frames, log=_flush_print, live_track=None):
         # it eat. On 08-31 we held fire here and it ate for 16 minutes. "Even
         # if the cat slips in the house, it will not be happy."
         if confirmed_orange and _in_window():
-            if _fire_water_async(log, delay=0.0, why="cat INTO the flap"):
+            if _fire_water_async(log, delay=0.0, why="cat INTO the flap",
+                                 sustain=WATER_FLAP_SUSTAIN):
                 log(f"  deterrent: cat is INTO the flap (max "
                     f"{max(recent):.0%} of box in the zone) -- holding the "
                     f"SOUND, firing WATER. {detail}")
@@ -740,6 +741,23 @@ WATER_PULSES = int(os.getenv("DETER_WATER_PULSES", "3"))
 WATER_PULSE = float(os.getenv("DETER_WATER_PULSE", "0.15"))
 WATER_GAP = float(os.getenv("DETER_WATER_GAP", "0.1"))
 
+# AT THE FLAP THE SHAPE CHANGES (Dima's question, 09-07). The burst above is
+# shaped for STARTLE at range -- three onsets, because a cat reacts to onset,
+# not duration (the same finding that made the 0.85s drill beat longer sounds).
+# At the door startle is the wrong goal: a startled cat at the flap may go
+# FORWARD, which is the failure we keep losing to. What is wanted there is a
+# BARRIER -- a wall of water it must cross, with no gaps between pulses to slip
+# through. So the flap gets ONE sustained spray instead.
+#
+# Triggered by GEOMETRY, not by a stopwatch: the burst's three pulses land on a
+# fixed clock (~2.2/3.4/4.6s after the decision) which only lines up with the
+# door if the cat runs its ~6s dash -- and this one also loiters. The flap
+# branches already know where the cat is; they now pass sustain=.
+#
+# Water through an open flap lands in Dima's GARAGE, not the house (Dave,
+# 09-07), which is why sustained is acceptable here.
+WATER_FLAP_SUSTAIN = float(os.getenv("DETER_WATER_FLAP_SUSTAIN", "2.0"))
+
 # Sound must LEAD the water, so the sound becomes a signal that PREDICTS it --
 # the speaker reaches the whole patio, the water only reaches where it is
 # aimed. Simultaneous pairing conditions poorly and water-first conditions
@@ -767,6 +785,11 @@ _water_last = 0.0
 # means a first-sight warm does nothing for up to 30s -- precisely the
 # seconds it exists to buy (found by test, 09-07).
 _water_wake = threading.Event()
+# Set while a burst is in flight. The keepalive pings with turn_off, which
+# is idempotent ONLY while the valve is meant to be shut -- mid-fire it
+# slams the valve closed. Cost a 2.0s sustained spray after 0.6s in
+# testing, 09-07, and was probably truncating every pulse too.
+_water_busy = threading.Event()
 
 
 def _water_svc(service, timeout=20):
@@ -799,7 +822,7 @@ def _water_keepalive_loop():
     while True:
         fast = time.time() < _water_fast_until
         try:
-            if _in_window() or fast:
+            if (_in_window() or fast) and not _water_busy.is_set():
                 _water_svc("turn_off", timeout=25)
         except Exception:
             pass          # a missed ping costs latency, never correctness
@@ -808,16 +831,26 @@ def _water_keepalive_loop():
         _water_wake.clear()
 
 
-def fire_water(log=_flush_print, delay=0.0, why=""):
-    """Pulse the valve. ALWAYS closes it, whatever happens on the way.
+def fire_water(log=_flush_print, delay=0.0, why="", sustain=None):
+    """Pulse the valve, or hold it open for `sustain` seconds at the flap.
 
-    Runs on its own thread: _play() blocks until playback ends (that is what
-    monopolised the speaker through an entire entry on 09-04), and the water
-    must never queue behind it.
+    ALWAYS closes it, whatever happens on the way. Runs on its own thread:
+    _play() blocks until playback ends (that is what monopolised the speaker
+    through an entire entry on 09-04), and water must never queue behind it.
     """
+    _water_busy.set()          # hold off the keepalive; see _water_busy
     try:
         if delay:
             time.sleep(delay)
+        if sustain:
+            # One continuous barrier, not a startle. Bounded well under the
+            # 10s HA failsafe and the >15s stuck-open watch.
+            _water_svc("turn_on")
+            time.sleep(sustain)
+            _water_svc("turn_off")
+            log(f"  water: FIRED sustained {sustain:.1f}s"
+                f"{(' -- ' + why) if why else ''}")
+            return
         for i in range(WATER_PULSES):
             if _aborted():
                 log(f"  water: ABORTED by hand after {i} pulse(s)")
@@ -834,14 +867,17 @@ def fire_water(log=_flush_print, delay=0.0, why=""):
     finally:
         # Belt and braces. automation.cat_sprayer_failsafe_off on Dima's HA
         # closes it 10s after any on -- this is the faster of the two, and the
-        # valve has NO device-side timer (no ZHA quirk applied).
+        # valve has NO device-side timer (no ZHA quirk applied). Clear _busy
+        # only AFTER the close, so the keepalive cannot resume mid-shutdown.
         try:
             _water_svc("turn_off")
         except Exception as exc:
             log(f"  water: FINAL CLOSE FAILED ({exc}) -- valve may be OPEN")
+        finally:
+            _water_busy.clear()
 
 
-def _fire_water_async(log=_flush_print, delay=0.0, why=""):
+def _fire_water_async(log=_flush_print, delay=0.0, why="", sustain=None):
     global _water_last
     if not (WATER_ENABLED and ARMED):
         return False
@@ -852,7 +888,8 @@ def _fire_water_async(log=_flush_print, delay=0.0, why=""):
         return False
     _water_last = time.time()
     threading.Thread(target=fire_water,
-                     kwargs={"log": log, "delay": delay, "why": why},
+                     kwargs={"log": log, "delay": delay, "why": why,
+                             "sustain": sustain},
                      daemon=True).start()
     return True
 
@@ -977,7 +1014,8 @@ def escalate(grab_frames, log=_flush_print, already_played=1, ladder=None,
         recent_commit = commit_seq[-FLAP_RECENT:] if commit_seq else []
         if recent_commit and any(c >= FLAP_COMMIT for c in recent_commit):
             watered = _fire_water_async(log, delay=0.0,
-                                        why="cat INTO the flap (escalation)")
+                                        why="cat INTO the flap (escalation)",
+                                        sustain=WATER_FLAP_SUSTAIN)
             log(f"  escalation: cat is INTO the flap "
                 f"(max {max(recent_commit):.0%} of box in the zone) -- "
                 f"stopping the ladder after {played}, no startle mid-opening"
