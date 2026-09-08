@@ -1,3 +1,40 @@
+# What is live right now — 2026-09-07 19:35 (FIRST WATER NIGHT)
+
+Read this before changing anything. **The deterrent is armed AND THE WATER IS
+LIVE.** Dave's standing rule still holds: no sound through the camera speakers,
+tests included, unless Dave has warned Dima first. The same now goes for water.
+
+## Water, armed tonight for the first time (deter.py 2151c79, 2689a14)
+
+Dima's SONOFF SWV-ZFU went in on the patio 09-07; Dave was on-site and tested
+it. `DETER_WATER=1` in `.env`; kill switch is `DETER_WATER=0` plus a patrol
+restart (cron only — never a session-tracked start).
+
+- **Fires at EVERY position, including a cat part-way through the flap.** The
+  SOUND hold there still stands; the water does not (Dave: "even if the cat
+  slips in the house, it will not be happy"). New `consider()` return value:
+  `in_flap_water`.
+- **Sound LEADS water by 1.7s** (`DETER_WATER_LEAD`) so the sound conditions as
+  a predictor of the water. The channels have opposite latencies (~1.2s speaker
+  vs 0.29s warm valve), so firing both on one line would land water FIRST.
+- **Burst**: 3 pulses, ~0.6s open each, ~3.0s end to end. Every Zigbee command
+  costs ~0.4s, so the command latency IS the pulse width.
+- **Keepalive**: pings the valve every 30s in the night window, ~1s from first
+  sight. The valve is a battery EndDevice: cold 1.7-2.0s, warm 0.29s.
+- **Three cutoffs, and only three**: fire_water's `finally`; HA
+  `automation.cat_sprayer_failsafe_off` (10s after any on, and on HA restart);
+  and ocp-71's external watcher (valve "on" >15s). There is NO device-side
+  timer — no ZHA quirk is applied, and on the ZFU the standard on_time is inert
+  anyway. If HA dies mid-burst, only the third layer catches it.
+
+## TWO SESSIONS are working this project — agreed division 09-07
+
+`ocp-71` owns the patrol.log/health watches and the 7am report; `ocp-d3` owns
+the valve, HA, `.env`, ocp-detector.service and deploy restarts. Neither
+touches the other's domain without asking Dave. On a genuine flood, fastest
+hand closes the valve and tells the other immediately.
+
+
 # What is live right now — 2026-09-03 09:00
 
 Read this before changing anything. **The deterrent is armed and will fire
