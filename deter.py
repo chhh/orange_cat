@@ -805,10 +805,29 @@ WATER_EXIT_CLEAR = float(os.getenv("DETER_WATER_EXIT_CLEAR", "0.15"))
 # moment the play command is issued.
 WATER_LEAD = float(os.getenv("DETER_WATER_LEAD", "1.7"))
 
-# Keepalive. Every 30s inside the night window holds ~0.66s; going to 10s all
-# night buys only 0.14s for triple the traffic. The win is switching to ~1s
-# the moment anything is seen, which reaches 0.29s within a couple of pings.
-WATER_KEEPALIVE = float(os.getenv("DETER_WATER_KEEPALIVE", "30"))
+# NO NIGHT-LONG KEEPALIVE (Dave, 09-08). There used to be one here, pinging
+# every 30s through the window on the strength of a cadence table that turned
+# out to be measured wrong: it recorded latency 30s AFTER A BURST of three
+# pings, not latency while pinging every 30s. Those are different quantities,
+# and the difference is the whole benefit. Measured properly at 04:30 on 09-08,
+# mid-window, with that keepalive supposedly running:
+#
+#   nothing pinging        1.83s   <- the actual state it was meant to prevent
+#   one ping every 20s     0.81s
+#   3-ping burst / 18s     0.89-2.16s
+#   one ping every 2s      0.31s
+#
+# The fast-poll window decays in SECONDS. A 30s keepalive bought almost
+# nothing while spending ~2900 commands a night on a battery device whose
+# charge sensor reports whole percent -- too coarse to warn us before it
+# mattered. Holding 0.3s all night would take ~14000 pings.
+#
+# So the valve is pinged ONLY when something has been seen: consider() calls
+# water_warm() on first sight, which wakes the loop below to ~1s for
+# WATER_FAST_FOR. That is what actually ran at 03:43 on 09-08, and the water
+# commands took ~0.6s instead of ~1.8s. Nothing to arm, nothing to remember,
+# and no pings on a night the cat never comes.
+WATER_KEEPALIVE = float(os.getenv("DETER_WATER_KEEPALIVE", "3600"))
 WATER_FAST = float(os.getenv("DETER_WATER_FAST", "1.0"))
 WATER_FAST_FOR = float(os.getenv("DETER_WATER_FAST_FOR", "20"))
 
@@ -857,14 +876,20 @@ def water_warm(seconds=None):
 
 
 def _water_keepalive_loop():
+    """Idle until water_warm() fires, then ping at ~1s while it stays hot.
+
+    The wait is on an Event, so a first-sight warm interrupts the idle
+    immediately rather than after a timeout -- without that, warming does
+    nothing for the seconds it exists to buy.
+    """
     while True:
         fast = time.time() < _water_fast_until
-        try:
-            if (_in_window() or fast) and not _water_busy.is_set():
+        if fast and not _water_busy.is_set():
+            try:
                 _water_svc("turn_off", timeout=25)
-        except Exception:
-            pass          # a missed ping costs latency, never correctness
-        gap = WATER_FAST if time.time() < _water_fast_until else WATER_KEEPALIVE
+            except Exception:
+                pass      # a missed ping costs latency, never correctness
+        gap = WATER_FAST if fast else WATER_KEEPALIVE
         _water_wake.wait(gap)
         _water_wake.clear()
 
