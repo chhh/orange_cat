@@ -749,7 +749,7 @@ INDOOR_GAP = float(os.getenv("DETER_INDOOR_GAP", "1.0"))
 WATER_ENABLED = os.getenv("DETER_WATER", "0") == "1"
 WATER_ENTITY = os.getenv("DETER_WATER_ENTITY", "switch.cat_sprayer")
 
-# Rapid bursts, not one stream (Dima, 09-07): a pulsed stimulus is harder to
+# Rapid bursts, not one stream (Dave, 09-07): a pulsed stimulus is harder to
 # habituate to and reads as something REACTING to the cat rather than a fixed
 # feature of the patio. Half-second spacing is the floor -- each transition
 # costs one ~0.29s command.
@@ -763,7 +763,7 @@ WATER_PULSES = int(os.getenv("DETER_WATER_PULSES", "3"))
 WATER_PULSE = float(os.getenv("DETER_WATER_PULSE", "0.15"))
 WATER_GAP = float(os.getenv("DETER_WATER_GAP", "0.1"))
 
-# AT THE FLAP THE SHAPE CHANGES (Dima's question, 09-07). The burst above is
+# AT THE FLAP THE SHAPE CHANGES (Dave's question, 09-07). The burst above is
 # shaped for STARTLE at range -- three onsets, because a cat reacts to onset,
 # not duration (the same finding that made the 0.85s drill beat longer sounds).
 # At the door startle is the wrong goal: a startled cat at the flap may go
