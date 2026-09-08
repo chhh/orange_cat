@@ -258,6 +258,12 @@ def consider(grab_frames, log=_flush_print, live_track=None):
     a small fresh cat and spent five of its nine visible seconds confirming;
     the live track is how the first glimpse becomes the engagement.
     """
+    # FIRST SIGHT: pull the valve into fast-poll now, while we spend the next
+    # second scoring the burst. Cold it answers in ~2s, warm in ~0.29s, and
+    # this is the only place we get that second for free.
+    if WATER_ENABLED and ARMED:
+        water_warm()
+
     frames = [x for x in (grab_frames(BURST) or []) if x is not None]
     if not frames:
         log("  deterrent: no burst frames available -- standing down")
@@ -309,6 +315,18 @@ def consider(grab_frames, log=_flush_print, live_track=None):
     # and only a cat substantially THROUGH the opening holds the fire.
     recent = commit_seq[-FLAP_RECENT:] if commit_seq else []
     if recent and any(c >= FLAP_COMMIT for c in recent):
+        # WATER DOES NOT HOLD HERE (Dave, 09-07). The sound hold stands -- a
+        # startle mid-opening can make a cat thrash against the flap -- but a
+        # soaking delivered AS it enters is aversive contingent on the act
+        # itself, which is cleaner conditioning than withholding and letting
+        # it eat. On 08-31 we held fire here and it ate for 16 minutes. "Even
+        # if the cat slips in the house, it will not be happy."
+        if confirmed_orange and _in_window():
+            if _fire_water_async(log, delay=0.0, why="cat INTO the flap"):
+                log(f"  deterrent: cat is INTO the flap (max "
+                    f"{max(recent):.0%} of box in the zone) -- holding the "
+                    f"SOUND, firing WATER. {detail}")
+                return "in_flap_water"
         log(f"  deterrent: cat is INTO the flap in the latest {len(recent)} "
             f"detection(s) (max {max(recent):.0%} of box in the zone) -- "
             f"standing down; a startle mid-opening could hurt it. {detail}")
@@ -407,12 +425,19 @@ def consider(grab_frames, log=_flush_print, live_track=None):
     _mark_fired()
     _FIRE_PLAN["ladder"] = ladder
     _FIRE_PLAN["rapid"] = rapid
+    # Water starts FIRST because it must land LAST: the thread sleeps
+    # WATER_LEAD while _play blocks on ~1.2s of speaker latency, so the sound
+    # arrives first and the water ~0.5s behind it. Starting it after _play
+    # would put it a full sound-length late; starting it inline would put it
+    # a second early. Own thread, so it cannot queue behind playback.
+    watered = _fire_water_async(log, delay=WATER_LEAD, why="engagement")
     try:
         _play(opener, log, volume=volume)
         graded = (f" at volume {volume:.1f} (far opener; height "
                   f"{geom[-1][1]:.1f}%)" if volume < 1.0 and geom else
                   (" (close engagement: rapid ladder)" if rapid else ""))
-        log(f"  deterrent: PLAYED {opener}{graded}. {detail}")
+        log(f"  deterrent: PLAYED {opener}{graded}"
+            f"{' + WATER' if watered else ''}. {detail}")
         return "fired"
     except Exception as exc:
         log(f"  deterrent: playback FAILED ({exc}). {detail}")
@@ -687,6 +712,150 @@ INDOOR_DELAY = float(os.getenv("DETER_INDOOR_DELAY", "2.0"))
 INDOOR_GAP = float(os.getenv("DETER_INDOOR_GAP", "1.0"))
 
 
+# --- water ------------------------------------------------------------------
+# The 12V-solenoid plan became a SONOFF SWV-ZFU (Zigbee ball valve) that Dima
+# wired up 2026-09-07. Measured that afternoon at his house:
+#
+#   warm (pinged 1s earlier)   0.29s command -> acknowledged
+#   30s idle                   0.66s
+#   cold (30+ min)             1.7-2.0s
+#
+# It is a battery EndDevice, so commands queue at its parent until it polls.
+# Hence the keepalive below: without it the first shot of the night is ~2s
+# late, which is a third of this cat's gate-to-flap dash.
+WATER_ENABLED = os.getenv("DETER_WATER", "0") == "1"
+WATER_ENTITY = os.getenv("DETER_WATER_ENTITY", "switch.cat_sprayer")
+
+# Rapid bursts, not one stream (Dima, 09-07): a pulsed stimulus is harder to
+# habituate to and reads as something REACTING to the cat rather than a fixed
+# feature of the patio. Half-second spacing is the floor -- each transition
+# costs one ~0.29s command.
+#
+# Measured 09-07 with the keepalive running: EVERY command costs ~0.4s, so a
+# 3-pulse burst is 7 commands = ~2.8s before any sleep of ours. The command
+# latency IS the pulse width; the sleeps below only trim it. Generous sleeps
+# (0.4/0.35) stretched the burst to 6.1s wall time -- longer than the cat's
+# whole gate-to-flap dash, so the last pulses hit an empty patio.
+WATER_PULSES = int(os.getenv("DETER_WATER_PULSES", "3"))
+WATER_PULSE = float(os.getenv("DETER_WATER_PULSE", "0.15"))
+WATER_GAP = float(os.getenv("DETER_WATER_GAP", "0.1"))
+
+# Sound must LEAD the water, so the sound becomes a signal that PREDICTS it --
+# the speaker reaches the whole patio, the water only reaches where it is
+# aimed. Simultaneous pairing conditions poorly and water-first conditions
+# backwards. The two channels have opposite latencies (~1.2s for HA speaker
+# playback vs ~0.29s for a warm valve), so firing both on the same line would
+# land the water a second BEFORE the sound. This delay is measured from the
+# moment the play command is issued.
+WATER_LEAD = float(os.getenv("DETER_WATER_LEAD", "1.7"))
+
+# Keepalive. Every 30s inside the night window holds ~0.66s; going to 10s all
+# night buys only 0.14s for triple the traffic. The win is switching to ~1s
+# the moment anything is seen, which reaches 0.29s within a couple of pings.
+WATER_KEEPALIVE = float(os.getenv("DETER_WATER_KEEPALIVE", "30"))
+WATER_FAST = float(os.getenv("DETER_WATER_FAST", "1.0"))
+WATER_FAST_FOR = float(os.getenv("DETER_WATER_FAST_FOR", "20"))
+
+# consider() can run every ~0.33s during an engagement. Without this the
+# valve would cycle dozens of times per visit -- motor wear on a ball
+# valve, and the burst stops reading as a discrete event.
+WATER_COOLDOWN = float(os.getenv("DETER_WATER_COOLDOWN", "8"))
+
+_water_fast_until = 0.0
+_water_last = 0.0
+
+
+def _water_svc(service, timeout=20):
+    """One switch service call. turn_off is idempotent and cannot wet anything."""
+    import json as _json, urllib.request, os as _os
+    import config
+    token = _os.getenv("HA_LONG_LIVED_TOKEN")
+    if not token:
+        raise RuntimeError("HA_LONG_LIVED_TOKEN not set")
+    req = urllib.request.Request(
+        f"http://{config.HA_HOST}:8123/api/services/switch/{service}",
+        data=_json.dumps({"entity_id": WATER_ENTITY}).encode(),
+        headers={"Authorization": f"Bearer {token}",
+                 "Content-Type": "application/json"})
+    t = time.monotonic()
+    with urllib.request.urlopen(req, timeout=timeout):
+        pass
+    return time.monotonic() - t
+
+
+def water_warm(seconds=None):
+    """Pull the valve into fast-poll -- call on FIRST SIGHT, not before firing."""
+    global _water_fast_until
+    _water_fast_until = max(_water_fast_until,
+                            time.time() + (seconds or WATER_FAST_FOR))
+
+
+def _water_keepalive_loop():
+    while True:
+        gap = WATER_FAST if time.time() < _water_fast_until else WATER_KEEPALIVE
+        try:
+            if _in_window() or time.time() < _water_fast_until:
+                _water_svc("turn_off", timeout=25)
+        except Exception:
+            pass          # a missed ping costs latency, never correctness
+        time.sleep(gap)
+
+
+def fire_water(log=_flush_print, delay=0.0, why=""):
+    """Pulse the valve. ALWAYS closes it, whatever happens on the way.
+
+    Runs on its own thread: _play() blocks until playback ends (that is what
+    monopolised the speaker through an entire entry on 09-04), and the water
+    must never queue behind it.
+    """
+    try:
+        if delay:
+            time.sleep(delay)
+        for i in range(WATER_PULSES):
+            if _aborted():
+                log(f"  water: ABORTED by hand after {i} pulse(s)")
+                break
+            _water_svc("turn_on")
+            time.sleep(WATER_PULSE)
+            _water_svc("turn_off")
+            if i < WATER_PULSES - 1:
+                time.sleep(WATER_GAP)
+        log(f"  water: FIRED {WATER_PULSES} x {WATER_PULSE:.2f}s"
+            f"{(' -- ' + why) if why else ''}")
+    except Exception as exc:
+        log(f"  water: FAILED ({exc})")
+    finally:
+        # Belt and braces. automation.cat_sprayer_failsafe_off on Dima's HA
+        # closes it 10s after any on -- this is the faster of the two, and the
+        # valve has NO device-side timer (no ZHA quirk applied).
+        try:
+            _water_svc("turn_off")
+        except Exception as exc:
+            log(f"  water: FINAL CLOSE FAILED ({exc}) -- valve may be OPEN")
+
+
+def _fire_water_async(log=_flush_print, delay=0.0, why=""):
+    global _water_last
+    if not (WATER_ENABLED and ARMED):
+        return False
+    since = time.time() - _water_last
+    if since < WATER_COOLDOWN:
+        log(f"  water: held ({since:.1f}s since the last burst, "
+            f"{WATER_COOLDOWN:.0f}s valve cooldown)")
+        return False
+    _water_last = time.time()
+    threading.Thread(target=fire_water,
+                     kwargs={"log": log, "delay": delay, "why": why},
+                     daemon=True).start()
+    return True
+
+
+# Started at import so the patrol gets it for free. Gated on ARMED so replays
+# (evaluate_deter forces DETER_ARM=0) and dry runs never touch Dima's valve.
+if WATER_ENABLED and ARMED:
+    threading.Thread(target=_water_keepalive_loop, daemon=True).start()
+
+
 # How consider() tells the escalation thread what to play next. `ladder` is
 # the ordered list of repeats AFTER the opener; `rapid` compresses the 2-3s
 # escalation interval to ~1s. CLOSE-RANGE DOCTRINE (09-01): on the breach at
@@ -800,9 +969,12 @@ def escalate(grab_frames, log=_flush_print, already_played=1, ladder=None,
         # substantially THROUGH the opening.
         recent_commit = commit_seq[-FLAP_RECENT:] if commit_seq else []
         if recent_commit and any(c >= FLAP_COMMIT for c in recent_commit):
+            watered = _fire_water_async(log, delay=0.0,
+                                        why="cat INTO the flap (escalation)")
             log(f"  escalation: cat is INTO the flap "
                 f"(max {max(recent_commit):.0%} of box in the zone) -- "
-                f"stopping after {played}, no startle mid-opening")
+                f"stopping the ladder after {played}, no startle mid-opening"
+                f"{'; WATER fired' if watered else ''}")
             return played
         if orange < MIN_ORANGE:
             if last_near_flap:
