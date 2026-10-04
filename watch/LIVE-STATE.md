@@ -1,3 +1,19 @@
+# 2026-10-03 19:31 — THE PI IS THE ARMED HOST; odd-fellow is a disarmed spare
+
+Dave armed the Pi himself (rpi-vpn, `ssh rpi-ocp`); ocp-72 did the cutover.
+Verified independently at 19:36: Pi patrol flags ARM=1/WATER=1 in /proc
+environ, `systemctl --user` units ocp-detector + ocp-soundserver active,
+segments fresh. odd-fellow's patrol runs with ARM=0/WATER=0.
+**Never re-arm odd-fellow while the Pi is armed.**
+
+Watches now read the Pi: ONE combined Monitor running `w-pi-patrol.sh`,
+`w-pi-health.sh` and `w-flood.sh`, self-tested 19:38. It expires every 30
+minutes and must be re-armed. Command, self-test and rationale:
+[[watches-follow-the-armed-host]]. Night report job reads the Pi (06:53).
+
+Risk tonight: odd-fellow is on battery (72% at 19:38) and hosts both Claude
+sessions. When it goes flat the Pi stays armed but nothing watches it.
+
 # 2026-10-03 19:36 — CUTOVER DONE: **THE PI IS THE ARMED HOST**
 
 Dave armed the Pi himself at 19:31. Verified 19:35:45: Pi `.env`

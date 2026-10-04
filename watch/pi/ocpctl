@@ -39,7 +39,7 @@ status() {
     curl -s -m 5 http://127.0.0.1:8080/health | python3 -c '
 import json, sys
 for b in json.load(sys.stdin)["buffers"]:
-    print(f"  {b[\"camera\"]:8} alive={b[\"alive\"]} last segment {b[\"seconds_since_segment\"]}s ago")
+    print("  %-8s alive=%s last segment %ss ago" % (b["camera"], b["alive"], b["seconds_since_segment"]))
 ' 2>/dev/null || echo "  detector not answering on :8080"
     echo "== last patrol log line"
     tail -n 1 "$HOME/ocp-watch/patrol.log" | cut -c1-160 | sed 's/^/  /'

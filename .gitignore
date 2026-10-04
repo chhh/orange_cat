@@ -37,3 +37,8 @@ ooo/
 # backups and editor leftovers
 *.bak*
 *.pre-git
+
+# WireGuard client exports contain PRIVATE KEYS -- never commit
+*.conf.download
+UDM-Chhh-OCP.conf
+wg0.conf*
