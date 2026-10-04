@@ -14,7 +14,7 @@ The Pi talks to HA at `192.168.1.133:8123` with the long-lived token in
 
 | What | Detail |
 |---|---|
-| Motion push | Automation **"Cat door outside motion -> detector"** must call `shell_command.cat_motion_rpi`, and that command must POST to the Pi: `curl -s -X POST http://192.168.1.142:8080/motion` (no body needed -- the camera defaults to `outside`, and the detector pulls its own frames). Optionally add `--connect-timeout 5` so a powered-down Pi cannot hang the automation for 60 s; do **not** use `--max-time` below ~20, the Pi takes about 9 s to answer. The older `cat_motion_dave_vpn` action (odd-fellow's tunnel address) should be disabled, or it stalls every event once that laptop is off. |
+| Motion push | Automation **"Cat door outside motion -> detector"** must call `shell_command.cat_motion_rpi`, and that command must POST to the Pi: `curl -s -X POST http://192.168.1.142:8080/motion` (no body needed -- the camera defaults to `outside`, and the detector pulls its own frames). Optionally add `--connect-timeout 5` so a powered-down Pi cannot hang the automation for 60 s; do **not** use `--max-time` below ~20, the Pi takes about 9 s to answer. The older `cat_motion_dave_vpn` action (odd-fellow) stays **disabled**. Set up this way 2026-10-03 and verified end to end with a leg in front of the camera (20:04). |
 | Outside speaker | `media_player.nursery_speaker_2` (the cat-door camera outside). |
 | Inside speaker | `media_player.garage_speaker` (the cat-door camera inside). **Never** `media_player.nursery_speaker` without the `_2` -- that is a Nest Mini in a bedroom. |
 | Water valve | `switch.cat_sprayer` (Zigbee). |
@@ -48,15 +48,34 @@ Everything runs as the unprivileged user `david` (key-only login, no sudo,
 | `~/.config/systemd/user/` | `ocp-detector.service` (port 8080) and `ocp-soundserver.service` (port 8081); sources in `watch/pi/` |
 | `crontab -l` | starts the patrol at boot and every 5 minutes if it is not running; night marker 21:00; report 06:50; prune 07:10. Source: `watch/pi/crontab.txt` |
 | `/dev/shm/ocp/` | rolling ~10 s of video per camera, in RAM (never touches the SD card) |
+| `~/.local/bin/ocpctl` | symlink to `watch/pi/ocpctl` -- start / stop / status |
 | `~/ocp.git` | bare repository that receives `git push pi` from odd-fellow |
 | `~/ocp-replay/` | clips from the 2026-10-03 validation; safe to delete |
 
 Dima's older copy in `/home/chhh/orange-cat` must stay stopped: it has no
 person gate and would compete for port 8080 and the same speaker.
 
+### Start, stop, status: `ocpctl`
+
+The whole stack -- detector, sound server and patrol -- is called **OCP** and
+is controlled with one command. From Dima's own account (`chhh`), prefix it
+with `sudo -iu david`:
+
+```bash
+sudo -iu david ocpctl status    # what is running, armed flags, cameras, last log line
+sudo -iu david ocpctl stop      # stop everything; nothing can fire; stays stopped
+sudo -iu david ocpctl start     # start again (the patrol follows within ~5 min)
+sudo -iu david ocpctl restart
+```
+
+`stop` survives cron: it leaves `~/ocp-watch/.stopped`, which
+`start-patrol.sh` obeys, until `start` removes it. It does **not** survive a
+reboot for the two services, which come back on boot by design -- but the
+patrol, the only piece that fires, stays down while the marker exists.
+
 ### Maintenance
 
-Is it alive?
+Is it alive? `ocpctl status`, or by hand:
 
 ```bash
 systemctl --user status ocp-detector ocp-soundserver

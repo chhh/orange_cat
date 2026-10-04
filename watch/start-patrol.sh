@@ -22,6 +22,10 @@
 # what happened 2026-09-02 10:15: two patrols, two deter loops). The lock fd
 # is inherited across exec/setsid into patrol.py and is held for its whole
 # lifetime, so it releases automatically when the patrol dies.
+# `ocpctl stop` (watch/pi/ocpctl) leaves this marker so cron does not bring a
+# deliberately stopped patrol back five minutes later.
+[ -e /home/david/ocp-watch/.stopped ] && exit 0
+
 exec 9>>/home/david/ocp-watch/start-patrol.lock
 flock -n 9 || exit 0
 

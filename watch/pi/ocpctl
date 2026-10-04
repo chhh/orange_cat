@@ -1,0 +1,69 @@
+#!/bin/bash
+# ocpctl -- start, stop and check the Orange Cat Problem stack on the Pi.
+#
+# The stack is three pieces, all running as the user `david`:
+#   ocp-detector     systemd --user unit, port 8080 (HA's motion POSTs)
+#   ocp-soundserver  systemd --user unit, port 8081 (two clips HA fetches)
+#   patrol           started by david's crontab every 5 min if not running;
+#                    this is the piece that fires sound and water
+#
+# Usage (as david):          ocpctl status|stop|start|restart
+# From Dima's own account:   sudo -iu david ocpctl status
+#
+# `stop` leaves a marker file that start-patrol.sh obeys, so cron does not
+# bring the patrol back; `start` removes it. Stopping is the safe way to make
+# sure nothing fires. Arming (whether a running patrol may fire) is separate:
+# DETER_ARM / DETER_WATER in ~/projects/ocp/.env -- see README.md.
+set -u
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+STOPPED="$HOME/ocp-watch/.stopped"
+UNITS="ocp-detector ocp-soundserver"
+
+patrol_pids() { pgrep -u "$(id -u)" -f '[o]cp-watch/patrol.py'; }
+
+status() {
+    echo "== services"
+    for u in $UNITS; do printf '  %-16s %s\n' "$u" "$(systemctl --user is-active "$u")"; done
+    echo "== patrol"
+    p=$(pgrep -u "$(id -u)" -f '[p]ython.* /home/david/ocp-watch/patrol.py' | head -1)
+    if [ -n "$p" ]; then
+        flags=$(tr '\0' '\n' < "/proc/$p/environ" | grep -E '^DETER_(ARM|WATER)=' | sort | tr '\n' ' ')
+        echo "  running (pid $p, since $(ps -o lstart= -p "$p")) $flags"
+    else
+        echo "  not running"
+    fi
+    [ -e "$STOPPED" ] && echo "  STOPPED by ocpctl at $(cat "$STOPPED") -- cron will not restart it"
+    echo "== .env"
+    grep -E '^DETER_(ARM|WATER)=' "$HOME/projects/ocp/.env" | sed 's/^/  /'
+    echo "== cameras"
+    curl -s -m 5 http://127.0.0.1:8080/health | python3 -c '
+import json, sys
+for b in json.load(sys.stdin)["buffers"]:
+    print(f"  {b[\"camera\"]:8} alive={b[\"alive\"]} last segment {b[\"seconds_since_segment\"]}s ago")
+' 2>/dev/null || echo "  detector not answering on :8080"
+    echo "== last patrol log line"
+    tail -n 1 "$HOME/ocp-watch/patrol.log" | cut -c1-160 | sed 's/^/  /'
+}
+
+stop() {
+    date '+%F %T' > "$STOPPED"
+    pkill -u "$(id -u)" -f '[o]cp-watch/patrol.py'
+    systemctl --user stop $UNITS
+    sleep 2
+    if patrol_pids >/dev/null; then echo "WARNING: patrol still running"; else echo "stopped: patrol, $UNITS"; fi
+}
+
+start() {
+    rm -f "$STOPPED"
+    systemctl --user start $UNITS
+    echo "started: $UNITS"
+    echo "the patrol starts from cron within 5 minutes (+30 s); check with: ocpctl status"
+}
+
+case "${1:-status}" in
+    status)  status ;;
+    stop)    stop ;;
+    start)   start ;;
+    restart) stop; start ;;
+    *) echo "usage: ocpctl status|stop|start|restart" >&2; exit 2 ;;
+esac
