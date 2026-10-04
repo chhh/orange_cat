@@ -1,3 +1,299 @@
+# 2026-10-03 19:30 — CUTOVER TO THE PI IN PROGRESS: **NOTHING IS ARMED**
+
+Dave decided at ~19:15 to skip the shadow night and move the runtime to
+Dima's Pi (`rpi-vpn`, 192.168.1.142; from odd-fellow: `ssh rpi-ocp`, user
+`david`). Session ocp-72 did the first half and was then stopped by its
+permission system from arming the Pi. **Arming the Pi is Dave's own step and
+had not happened when this was written.** Do not trust this paragraph for the
+current state — read the flags:
+
+    grep -E '^DETER_(ARM|WATER)=' ~/projects/ocp/.env             # odd-fellow
+    ssh rpi-ocp "grep -E '^DETER_(ARM|WATER)=' projects/ocp/.env"  # the Pi
+
+| | odd-fellow | Pi |
+|---|---|---|
+| `.env` flags at 19:30 | `DETER_ARM=0`, `DETER_WATER=0` (backup `.env.bak-20261003-precutover` has the armed file) | `DETER_ARM=0`, `DETER_WATER=0` |
+| detector | systemd, restarted 19:20:54 disarmed | `systemctl --user` unit, running, disarmed |
+| patrol | cron-restarted 19:25:30, environ 0/0 verified | crontab installed 19:27, dry-run patrol |
+| sound server :8081 | bare pid 574231, unchanged | `ocp-soundserver` user unit |
+
+**Exactly one host may be armed.** To finish the cutover, arm the Pi only
+(README, "Arm or disarm"). To abandon it, re-arm odd-fellow only — and
+odd-fellow was on battery at 74% and falling at 19:28.
+
+Validated on the Pi before this: six recorded engagements replay to a fire
+decision on both hosts (two differ by one 0.5 s tick); classification with a
+cat in frame costs ~270 ms there against ~160 ms on odd-fellow. NOT validated:
+a live night, any real sound or water from the Pi, a reboot. Details:
+memory `pi-migration-plan`. Operating manual: `README.md`.
+
+Still Dima's: enable `shell_command.cat_motion_rpi` and disable
+`cat_motion_dave_vpn` in the cat-door automation; DHCP reservation for
+192.168.1.142. The watches and the 06:50 report still read odd-fellow's logs —
+ocp-d3 rehomes them once the Pi is armed.
+
+## Watches re-armed 2026-10-03 18:37 — and they now EXPIRE every 30 minutes
+
+The Claude Code process restarted and took all three watches and the report
+timer with it (no surviving processes, so no duplicates this time). Re-armed
+and self-tested 18:37:59-18:38:03: patrol, health, flood all answered.
+
+**Monitor no longer accepts `persistent: true`** — the maximum is a 30-minute
+timeout, with one notice at expiry. Each watch must be re-armed when its
+expiry notice arrives; `w-patrol.sh` uses `tail -n 0`, so lines written in the
+seconds between expiry and re-arm are not replayed. `watches/README.md` still
+says `persistent: true`; that instruction is stale.
+
+Report timer is now 06:53 (after the 06:50 scorecard), session-only, 7-day
+expiry. A second session, ocp-72, is building the Pi migration on rpi-vpn
+(192.168.1.142), DISARMED there; odd-fellow remains the only armed host.
+
+# 2026-10-03: SOUND FIXED (pinned), and the TUNNEL IS UP AT DIMA'S — needs sudo
+
+## The HTTP 500s are solved
+
+Every `playback FAILED (HTTP Error 500)` since 09-12 was a **stale
+SELF_SOUND_BASE**. `config.self_host()` resolves once per process; the patrol
+had run since 09-08 (before the move) and held `http://192.168.7.4:8081`,
+unreachable on-site, so HA could not fetch the sound and returned 500.
+Cost: 4 engagements fired water with NO sound (09-14, 09-24 x2, 09-27).
+Full write-up + my wrong 09-15 diagnosis: [[stale-sound-base-in-long-process]].
+
+**Fix applied (no sudo):** `DETER_SELF_SOUND_BASE=http://192.168.1.14:8081`
+pinned at the end of `.env` (backup: `.env.bak-20261003-presoundpin`).
+Verified it propagates through BOTH startup paths — `start-patrol.sh` sources
+.env, and server.py's `load_dotenv()` (line 50) precedes its lazy
+`import deter` (line 653). Patrol and detector both restarted onto it.
+
+**REMOVE THAT PIN WHEN THE LAPTOP GOES HOME** — at Dave's, HA reaches us over
+the tunnel and the correct value is `http://192.168.7.4:8081`.
+
+## I started the tunnel by accident — please stop it
+
+`ocp-detector.service` has `Wants=wg-quick@wg0.service`, so restarting the
+detector STARTED the tunnel at 16:07:39 even though the unit is `disabled`.
+On-site that is the harmful condition from 09-12: the route to HA is hijacked
+into the tunnel (`192.168.1.133 dev wg0 src 192.168.7.4`), which is what
+caused the repeated HA-unreachable flapping that day.
+
+    sudo systemctl stop wg-quick@wg0
+
+I cannot stop it — `systemctl stop` needs root and timed out on polkit. The
+sound pin makes the deterrent correct regardless of tunnel state, so this is
+about routing stability, not sound. **Any future detector restart on-site will
+pull the tunnel up again** — expect it and stop it afterwards.
+
+# ODD-FELLOW IS AT DIMA'S UNTIL ~2026-09-24 (12 days, unattended)
+
+Dave took the laptop on-site 09-12 and is leaving it there. **No one can run
+sudo for 12 days** — anything needing root must already be done.
+
+## 2026-09-15 02:14 — stray returned; WATER FIRED, SOUND FAILED
+
+First sighting in 3 nights. Water delivered `3 x 0.15s` (the real pulse
+pattern, valve confirmed actuating 02:14:25); sound died with
+`playback FAILED (HTTP Error 500)`. Cat left; no further sightings.
+
+- **NOT the DHCP cause that was predicted.** Lease unchanged (192.168.1.14),
+  both sound URLs 200, both speakers `idle` and reachable seconds later.
+  Cause of the 500 is unknown and cannot be tested without playing audio at
+  Dima's — [[never-play-sounds-unwarned]].
+- **No reaction video exists.** Capture is gated on `decision == "fired"` and
+  a water-only fire returns `"failed"`. The scorecard will also read
+  `pre-entry fires: 0`. See [[water-only-fire-is-invisible]].
+- **Ask Dima for the NVR clip at 02:14** — it is the only surviving footage,
+  and it would finally answer whether the ~0.15s pulses put water on the
+  patio (the 09-12 on-site test showed 3s gave nothing, 8s worked).
+
+## WATER VERIFIED WORKING 2026-09-12 (and the failsafe is proven)
+
+On-site test with Dave and Dima present: **water reaches the patio** — the
+first confirmation ever. A 3s burst gave nothing, an 8s burst worked, so the
+line purges slowly after sitting. NOT settled: whether the real ~0.4s pulses
+deliver water. Testing was stopped before that.
+
+**Hazard:** a 0.45s pulse timed out on `turn_off` and left the valve open ~15s.
+Same signature as the 05:34 engagement. It is the pattern the deterrent uses.
+
+**Mitigation is PROVEN, not assumed:** Dave verified in HA Traces that
+`automation.cat_sprayer_failsafe_off` fired at exactly that moment, while our
+direct API `turn_off` was timing out — so the failsafe is on a more reliable
+path than our commands. And a dead HA cannot open the valve in the first
+place. Residual risk is only "HA dies within 10s of an open". Accepted.
+
+## The tunnel is DISABLED and must stay that way
+
+`sudo systemctl disable --now wg-quick@wg0` ran 09-12 17:16.
+
+**Why it had to go:** our config routes `192.168.1.133/32` into the tunnel, and
+HA *is* 192.168.1.133 on the LAN we are now sitting on. Every time wg0 came up
+it hijacked the route to HA and sent it into a dead tunnel — that was the
+15:59-16:17 flap storm, not a fault at Dima's. The config's own comment warned
+of it ("any LOCAL device at 192.168.1.133 is shadowed while wg0 is up").
+Do NOT re-enable while on-site.
+
+Verified after disabling: HA 0% loss + API 200 routed via wlp0s20f3;
+192.168.7.1 still reachable through the gateway (trap 2 in
+[[on-site-network-traps]]); both cameras writing.
+
+## What is DIFFERENT while on-site
+
+- **No tunnel dependency at all** — cameras and HA are both local. This removes
+  the failure mode that cost 2 of the last 3 nights.
+- Our address is a **DHCP lease, 192.168.1.14**. `config.SELF_SOUND_BASE`
+  resolves ONCE at process start, so if the lease moves the 8081 sound path
+  (siren_open.wav, Poshel-Otsuda.wav) goes silently quiet with no error.
+  A DHCP reservation was requested from Dima. **If sounds go missing, check
+  the lease first.**
+- HA's `shell_command.cat_motion_dave_vpn` curls 192.168.7.4:8080 — dead on
+  site. Low priority; the patrol polls independently.
+- The tunnel watcher monitor was stopped (it pinged 192.168.7.1, which answers
+  via the gateway on-site, so it would have read "up" forever and misled).
+
+## What still needs doing (no sudo required)
+
+- **The valve/water is still dead** — HA's Zigbee integration never came back
+  from its 09-10 restart; `switch.cat_sprayer` is a restored cache entry
+  (`last_updated 2026-09-10T07:40:27`, attributes stripped). Reloading the
+  Zigbee integration is a Dima action. Until then the deterrent is SOUND-ONLY.
+- `/home/david/wg0.conf.new` is a corrected client config for the RETURN trip
+  (UniFi export + the 3 standard fixes). Do not install it on-site.
+  Open question: an unidentified credential Dave was given may be a
+  PresharedKey — unresolved, ask before installing.
+
+# What is live right now — 2026-09-09 07:00
+
+Read this before changing anything. **Water is armed and will fire tonight
+without anyone starting it.** Standing rule: no camera-speaker playback and no
+water, tests included, unless Dave has warned Dima first.
+
+## Night of 09-08/09: the stray did not come
+
+Zero visits, zero fires, zero entries, zero faults. Four detections, all the
+resident tuxedo, all correctly held. Report "The No-Show":
+https://claude.ai/code/artifact/7eaa5db9-08e2-43a6-b031-e9ac00b10c02
+
+**Do not read this as the water working.** TWO nights without an entry, not
+three — the 09-06/07 night had TWO ENTRIES (3m40s at 00:50, ~9s at 04:42),
+confirmed on video 09-09 after Dave challenged it; only 23:41 was a repel.
+09-07/08 is partial evidence, and a no-show is none at all. The water has
+fired once in its life and has never been confirmed to land on the cat.
+See [[night-0909-no-show]] and [[siren-opener-best-night]].
+
+Config is UNCHANGED from last night and should stay that way — one quiet
+night is not grounds to alter anything.
+
+## LIVE FAULT 2026-09-12: THE WATER HAS BEEN DEAD SINCE 09-10 00:40
+
+Found at 05:35 09-12 when a real fire logged `water: FAILED (timed out)` and
+`FINAL CLOSE FAILED -- valve may be OPEN`.
+
+**Dima's HA Zigbee integration never came back from its 09-10 00:40 restart.**
+36 of 440 entities are frozen at exactly `2026-09-10T07:40:2x`, several flagged
+`restored: true` — including `switch.cat_sprayer`, its battery sensor and its
+identify button, plus other Zigbee devices. HA core is fine (28 entities
+updated in the last 35 min). **The water deterrent was non-functional for the
+nights of 09-10/11 and 09-11/12.** Sound still works — it goes via
+`media_player`, a different integration.
+
+**NOT a flood.** With no integration loaded HA could not deliver `turn_on`, so
+the valve never actuated; it holds its 09-10 `off` position. Treat
+"valve may be OPEN" as paranoia-by-design unless the integration is loaded.
+
+**FIX IS DIMA'S:** reload the Zigbee integration (Settings -> Devices &
+Services), or restart HA, or re-seat the coordinator. Nothing at our end helps.
+
+**DO NOT trust `GET /api/states/switch.cat_sprayer` as a readiness check** —
+it returned `off / battery 100%` for two days. It is the probe this file
+previously recommended. Use it ONLY together with a freshness test:
+`last_updated` must be recent, and `attributes.restored` must not be true.
+Full write-up: [[valve-entity-lies-when-restored]].
+
+## RESOLVED: 21h58m tunnel outage, 2026-09-11 03:31:55 -> 09-12 01:29:26
+
+Dima's main router updated/rebooted and the tunnel never came back until he
+fixed it on his side (no config change or sudo was needed at our end — it
+recovered by itself, so it was a DDNS refresh or the UDP 51820 forward).
+
+Cost: the last 2h28m of the 09-10/11 window, ALL of the 09-11 daytime, and
+21:45->01:29 of the 09-11/12 window. **The stray came at 05:20 on 09-11,
+during the blind stretch, and was seen only on Dima's NVR** — see
+[[accidental-control-trial-0520]]. Ladder and the diagnostics that worked:
+[[tunnel-down-diagnostic-ladder]].
+
+Verified back at 01:30 09-12: peer + HA reachable, patrol stream HOT, both
+cameras writing real segments, valve `off` / battery 100% / failsafe `on`,
+both speakers idle, sounds 5/5, detector answering on 8080 and idle-waiting.
+The detector was NOT tested end-to-end — a synthetic POST /motion can reach
+`deter.consider()` and would risk an unwarned 01:30 fire at Dima's.
+
+## Dima's HA went down TWICE mid-window, 2026-09-10 (~4.4 min inert)
+
+    outage 1  00:23:23 -> 00:25:08  (105s)  clean service stop, HA logged
+                                            "Home Assistant - stopped"
+    outage 2  00:37:38 -> ~00:40:15 (157s)  HOST-level: 192.168.1.133 stopped
+                                            answering ping, port 8123 closed
+
+**CONFIRMED by Dima 09-10: he updated and rebooted HA.** Benign cause, but
+therefore RECURRING — every future HA update disables the deterrent for
+minutes, silently. Nothing came: **zero orange sightings all night**, so this
+one cost nothing. Ask Dima to keep updates outside 22:00-06:00.
+See [[ha-outage-disables-deterrent]].
+
+- **The deterrent is FULLY inert when HA is down** -- not merely water-less.
+  Both speakers are HA `media_player` calls and the valve is Zigbee-behind-HA,
+  so sound dies with the water. There is NO fallback actuator path. Every
+  actuator we have lives on Dima's LAN and outside our control: worth writing
+  up as the single point of failure it is.
+- **Detection was never affected.** Cameras and patrol reach the NVR at
+  192.168.7.1 through the tunnel and never touch HA. Stream stayed hot, 0
+  reconnects, segments fresh throughout both outages.
+- No flood risk either time: valve `off`, and a dead HA cannot open it.
+
+### Readiness is the VALVE ENTITY, not HA being "up"
+
+Three probes disagree, and only the last one is right:
+
+    ping 192.168.1.133   caught outage 2 (host down), would MISS a service
+                         stop -- the host answers ping while HA is stopped
+    GET /api/            catches both, but returns 200 while entities are
+                         still registering: at 00:40:02 the API was up and
+                         switch.cat_sprayer, the failsafe AND BOTH SPEAKERS
+                         were all still missing
+    GET /api/states/switch.cat_sprayer   the real signal
+
+Entity-registration lag after outage 2 was ~90s (API 00:38:43, valve present
+~00:40:15). So HA "being up" overstates readiness by a minute and a half.
+
+FIX IN DAYLIGHT: w-health.sh line 36 pings the host; make it query the valve
+entity instead. NOT changed live -- no edits to a watch inside the window.
+
+## State this morning
+
+- Four watches re-armed and self-tested 2026-09-08 08:12 by session ocp-d3.
+  Two watches and a 06:45 report timer had SURVIVED the previous session
+  rather than dying with it — the duplicates were stopped, and the stale
+  timer (still carrying 09-07/08's talking points) was stopped 09-09.
+  The last stale duplicate (a `w-flood.sh` from 09-07) was killed by Dave
+  on 09-09 07:2x; it had emitted nothing since 09-07 20:39, so it was already
+  silent. Exactly one of each watch now runs; the flood watch was re-self-tested
+  07:30. NOTE: duplicates race for the `.flood-selftest` file, so a self-test
+  that is fired but never answered is the symptom of one.
+- Verified 09-08 19:17 before the window: DETER_ARM=1, DETER_WATER=1, window
+  22:00-06:00, both recorders producing real segments, all ELEVEN sound URLs
+  the code actually requests return 200, valve closed, failsafe automation on,
+  valve battery 100%.
+- **The supply tap is OPEN — confirmed by Dave 2026-09-09.** Do not re-raise.
+- **Wetting the cat is NOT the goal (Dave, 09-09).** On 09-07/08 the cat left
+  because the HOSE TRIGGERED; it got little or no water on it. The active
+  ingredient is the crack/hiss of the valve, so coverage and aim matter far
+  less than previously written. The risk this creates is HABITUATION: a
+  startle with no consequence is functionally another sound, and this cat
+  habituates to sounds ([[indoor-sound-does-not-deter]], drill decay). Watch
+  whether the SAME TRIGGER KEEPS WORKING across engagements.
+
+---
+
 # What is live right now — 2026-09-08 08:05
 
 Read this before changing anything. **Water is armed and will fire tonight
@@ -66,8 +362,9 @@ the gate route works in our favour. See [[the-corridor]].
 
 - The watches should become systemd user units or cron jobs that notify Dave
   directly, instead of dying with a Claude session. Not yet scoped.
-- Aim stays as it is; extending the throw was declined. Confirm coverage the
-  first time the cat is actually hit.
+- Aim stays as it is; extending the throw was declined. Coverage is NOT the
+  open question — see the 09-09 note above; the trigger, not the soaking, is
+  what moved the cat.
 - Whether the 1.7s sound lead still earns its place — the cat moved on the
   water, not the siren.
 

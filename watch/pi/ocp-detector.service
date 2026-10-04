@@ -1,0 +1,27 @@
+# systemd USER unit for rpi-vpn (the Pi at Dima's). Lives in
+# ~/.config/systemd/user/ and runs under `david` with linger enabled, so it
+# starts at boot with nobody logged in and needs no sudo to manage:
+#   systemctl --user start|stop|restart|status ocp-detector
+#
+# Differences from odd-fellow's /etc/systemd/system/ocp-detector.service:
+# - no wg-quick@wg0 lines: the Pi is on Dima's LAN and has no tunnel. On
+#   odd-fellow that Wants= started the tunnel on-site by accident (2026-10-03
+#   16:07) and hijacked the route to HA; there is nothing to pull up here.
+# - no ExecStopPost pkill: the ffmpeg recorders are in this unit's cgroup and
+#   die with it.
+[Unit]
+Description=Orange-cat detector webhook server (OCP)
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/ocp
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStartPre=/usr/bin/mkdir -p %h/projects/ocp/frames
+ExecStart=%h/.local/bin/uv run --frozen server.py
+Restart=always
+RestartSec=10
+StandardOutput=append:%h/projects/ocp/frames/server.log
+StandardError=append:%h/projects/ocp/frames/server.log
+
+[Install]
+WantedBy=default.target
