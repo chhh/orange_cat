@@ -1,4 +1,16 @@
-# 2026-10-03 19:30 — CUTOVER TO THE PI IN PROGRESS: **NOTHING IS ARMED**
+# 2026-10-03 19:36 — CUTOVER DONE: **THE PI IS THE ARMED HOST**
+
+Dave armed the Pi himself at 19:31. Verified 19:35:45: Pi `.env`
+`DETER_ARM=1` / `DETER_WATER=1`; its one patrol (pid 71145, cron-started
+19:35:31) carries 1/1 in `/proc/<pid>/environ`; `ocp-detector` restarted
+19:31:58 on the armed file; both segment buffers fresh. odd-fellow re-checked
+at the same moment: `.env` 0/0, patrol environ 0/0 — a disarmed spare, on
+battery (73%). **Do not re-arm odd-fellow while the Pi is armed.** Water and
+sound will fire from the Pi tonight, 22:00-06:00, with no live night, no real
+actuation and no reboot ever tested from that box. The section below is the
+19:30 snapshot from mid-cutover, kept for the record.
+
+# 2026-10-03 19:30 — mid-cutover snapshot (superseded above)
 
 Dave decided at ~19:15 to skip the shadow night and move the runtime to
 Dima's Pi (`rpi-vpn`, 192.168.1.142; from odd-fellow: `ssh rpi-ocp`, user

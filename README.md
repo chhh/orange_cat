@@ -14,7 +14,7 @@ The Pi talks to HA at `192.168.1.133:8123` with the long-lived token in
 
 | What | Detail |
 |---|---|
-| Motion push | Automation **"Cat door outside motion -> detector"** must call `shell_command.cat_motion_rpi`, and that command must POST to the Pi: `curl -s --max-time 5 -X POST http://192.168.1.142:8080/motion`. The older `cat_motion_dave_vpn` action (odd-fellow's tunnel address) should be disabled, or it stalls every event once that laptop is off. |
+| Motion push | Automation **"Cat door outside motion -> detector"** must call `shell_command.cat_motion_rpi`, and that command must POST to the Pi: `curl -s -X POST http://192.168.1.142:8080/motion` (no body needed -- the camera defaults to `outside`, and the detector pulls its own frames). Optionally add `--connect-timeout 5` so a powered-down Pi cannot hang the automation for 60 s; do **not** use `--max-time` below ~20, the Pi takes about 9 s to answer. The older `cat_motion_dave_vpn` action (odd-fellow's tunnel address) should be disabled, or it stalls every event once that laptop is off. |
 | Outside speaker | `media_player.nursery_speaker_2` (the cat-door camera outside). |
 | Inside speaker | `media_player.garage_speaker` (the cat-door camera inside). **Never** `media_player.nursery_speaker` without the `_2` -- that is a Nest Mini in a bedroom. |
 | Water valve | `switch.cat_sprayer` (Zigbee). |
