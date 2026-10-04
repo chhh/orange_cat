@@ -68,6 +68,13 @@ sudo -iu david ocpctl start     # start again (the patrol follows within ~5 min)
 sudo -iu david ocpctl restart
 ```
 
+`ocpctl` is not a service: it is a short bash script in the repo
+(`watch/pi/ocpctl`), made available as a command by a symlink at
+`/home/david/.local/bin/ocpctl` (that directory is on david's `PATH`). It
+runs only when someone types it, and simply calls `systemctl --user`, `pkill`
+and `curl` for you. To remove just the command: `rm ~/.local/bin/ocpctl` as
+david; nothing else depends on it.
+
 `stop` survives cron: it leaves `~/ocp-watch/.stopped`, which
 `start-patrol.sh` obeys, until `start` removes it. It does **not** survive a
 reboot for the two services, which come back on boot by design -- but the
