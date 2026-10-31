@@ -52,8 +52,10 @@ Everything runs as the unprivileged user `david` (key-only login, no sudo,
 | `~/ocp.git` | bare repository that receives `git push pi` from odd-fellow |
 | `~/ocp-replay/` | clips from the 2026-10-03 validation; safe to delete |
 
-Dima's older copy in `/home/chhh/orange-cat` must stay stopped: it has no
-person gate and would compete for port 8080 and the same speaker.
+A second checkout of this repository lives in `/home/chhh/orange-cat` (Dima's
+account) and must stay stopped: only one detector may own port 8080 and the
+same speaker. It is a working copy, not the deployed one -- the deployed copy
+is `/home/david/projects/ocp`.
 
 ### Start, stop, status: `ocpctl`
 
@@ -79,6 +81,68 @@ david; nothing else depends on it.
 `start-patrol.sh` obeys, until `start` removes it. It does **not** survive a
 reboot for the two services, which come back on boot by design -- but the
 patrol, the only piece that fires, stays down while the marker exists.
+
+### Stop completely, and start again by hand
+
+Use this when the stack must not come back at all -- for example while the
+camera that drives the detections is switched off, before maintenance, or
+while another host is armed. It is `ocpctl stop` plus two extra steps: the
+units are **disabled** (so a reboot does not start them) and the patrol is
+**removed from cron** (so nothing resurrects it).
+
+The script does all of it and backs up the crontab first:
+
+```bash
+# from a checkout, as chhh (it needs root)
+sudo watch/pi/disable-ocp.sh            # stop + disable; prints what it changed
+sudo watch/pi/disable-ocp.sh restore    # put crontab and units back
+```
+
+By hand, the same full stop:
+
+```bash
+# 1. take the patrol out of cron (keep a copy first; file-based so sudo
+#    still has the terminal for its password prompt)
+sudo -u david crontab -l > /tmp/david-crontab.bak
+grep -v 'ocp-watch/start-patrol.sh' /tmp/david-crontab.bak > /tmp/david-crontab.new
+sudo -u david crontab /tmp/david-crontab.new
+
+# 2. kill the running patrol
+sudo pkill -u david -f 'ocp-watch/patrol\.py'
+
+# 3. stop both units and stop them starting at boot
+sudo -u david env XDG_RUNTIME_DIR=/run/user/$(id -u david) \
+  systemctl --user disable --now ocp-detector ocp-soundserver
+
+# 4. confirm: no processes, both ports closed
+ps -u david -o pid,cmd | grep -E 'server\.py|patrol\.py|rtsp_transport'
+curl -s -m 3 localhost:8080/health || echo 'detector down'
+curl -s -m 3 -o /dev/null localhost:8081 || echo 'sound server down'
+```
+
+By hand, the way back. The patrol is deliberately *not* started here: it
+comes from cron within five minutes, and a copy started from a login or agent
+session dies with that session.
+
+```bash
+# 1. clear the marker ocpctl stop leaves behind (harmless if absent)
+sudo -u david rm -f /home/david/ocp-watch/.stopped
+
+# 2. restore the crontab -- either the backup made above, or the canonical one
+sudo -u david crontab /home/david/projects/ocp/watch/pi/crontab.txt
+
+# 3. enable the units and start them now
+sudo -u david env XDG_RUNTIME_DIR=/run/user/$(id -u david) \
+  systemctl --user enable --now ocp-detector ocp-soundserver
+
+# 4. wait for cron, then check everything
+sudo -iu david ocpctl status      # patrol should appear within ~5 min
+```
+
+Watch out for two things: `.stopped` overrides a restored crontab, so a
+`crontab` install alone will not bring the patrol back while it exists; and a
+disabled unit stays disabled across reboots until step 3 above is run --
+`ocpctl start` only starts it for the current boot.
 
 ### Maintenance
 
