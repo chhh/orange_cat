@@ -7,6 +7,10 @@ Raspberry Pi 5 (16 GB, Debian 13, 64-bit) instead of Dave's laptop
 `odd-fellow`. What the system does and why is in `AGENTS.md`; what is armed
 right now is in `watch/LIVE-STATE.md`. This section is the operating manual.
 
+`main` is the canonical branch. `roi-background-detection` is the line the Pi
+ran on from its setup until 2026-10-31; it was merged into `main` and is no
+longer updated (every commit on it is an ancestor of `main`).
+
 ### What Home Assistant has to provide
 
 The Pi talks to HA at `192.168.1.133:8123` with the long-lived token in
@@ -40,7 +44,7 @@ Everything runs as the unprivileged user `david` (key-only login, no sudo,
 
 | Path | What |
 |---|---|
-| `~/projects/ocp/` | this repository (branch `roi-background-detection`) and its `.venv` |
+| `~/projects/ocp/` | this repository (branch `main`) and its `.venv` |
 | `~/projects/ocp/.env` | camera stream keys, HA token, `DETER_ARM`, `DETER_WATER`. Mode 600, not in git. |
 | `~/projects/ocp/models/yolov8n.onnx` | detector weights, not in git (`AGENTS.md` says how to regenerate) |
 | `~/projects/ocp/frames/` | `server.log`, `events.csv`, `events/` (saved frames), background models |
@@ -173,7 +177,7 @@ already in progress: `touch ~/ocp-watch/.deter-abort`.
 Update the code (from odd-fellow, then on the Pi):
 
 ```bash
-git push pi roi-background-detection
+git push pi main
 ssh rpi-ocp 'cd ~/projects/ocp && git pull && ~/.local/bin/uv sync --frozen \
   && systemctl --user restart ocp-detector && pkill -f "[p]atrol.py"'
 ```

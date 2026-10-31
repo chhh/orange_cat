@@ -134,4 +134,4 @@ Local backups taken 20:44 (`~/ocp-backups/`, mode 600):
 To restore GitHub, Dave needs to supply the remote URL and a credential:
 
     git remote add github <url>          # or: git remote set-url origin <url>
-    git push github roi-background-detection
+    git push github main
