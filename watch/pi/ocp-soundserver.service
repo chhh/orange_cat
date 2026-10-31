@@ -1,0 +1,19 @@
+# systemd USER unit for rpi-vpn: serves sounds/ on :8081 so Home Assistant can
+# fetch the two clips that are not staged on its own disk (siren_open.wav and
+# Poshel-Otsuda.wav). On odd-fellow this was a bare process started by hand on
+# 08-27 that would not have survived a reboot; here it is a unit.
+#   systemctl --user start|stop|status ocp-soundserver
+[Unit]
+Description=OCP sound server for Home Assistant (port 8081)
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/ocp/sounds
+ExecStart=%h/projects/ocp/.venv/bin/python -m http.server 8081 --bind 0.0.0.0
+Restart=always
+RestartSec=5
+StandardOutput=append:%h/ocp-watch/soundserver.log
+StandardError=append:%h/ocp-watch/soundserver.log
+
+[Install]
+WantedBy=default.target

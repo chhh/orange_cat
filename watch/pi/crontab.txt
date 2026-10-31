@@ -1,0 +1,11 @@
+# david's crontab on rpi-vpn -- same five lines as odd-fellow. Install with
+#   crontab ~/projects/ocp/watch/pi/crontab.txt
+# The patrol is only ever (re)started from here, never from a login or agent
+# session. Whether it can FIRE is decided by DETER_ARM in ~/projects/ocp/.env:
+# start-patrol.sh exports DETER_ARM=1 and then sources .env, so the explicit
+# DETER_ARM=0 line there is what keeps a shadow host disarmed.
+50 6 * * * /home/david/ocp-watch/overnight-report.sh
+@reboot /home/david/ocp-watch/start-patrol.sh
+*/5 * * * * /home/david/ocp-watch/start-patrol.sh
+0 21 * * * /home/david/ocp-watch/night-window-marker.sh
+10 7 * * * find /home/david/projects/ocp/frames/events -mindepth 1 -mtime +14 -delete

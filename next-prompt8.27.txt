@@ -1,0 +1,310 @@
+NIGHT OF 08-28: THE STRAY CAME THREE TIMES, WE FIRED TWICE, BOTH LANDED ON AN
+EMPTY PATIO. Full account in the aiming-the-deterrent memory. Videos:
+~/ocp-watch/reactions/fire-20260828-013231.mp4 and fire-20260828-032259.mp4.
+
+THE ONE THING WORTH DOING NEXT: move the patrol off segment files and onto the
+DECODED RING BUFFER. server.py already supports it (BUFFER_MODE=decoded, the
+`streamer` module). Segments are ~5s and one being written cannot be read, so
+the freshest frame is ~4s old; add ~1.3s to play a sound and you are ~5s behind
+a cat that leaves frame in ~3. That is why all three fires missed. Detection
+has been reliable for days -- do not spend time on it.
+
+DO NOT go back to box AREA for proximity. A cat facing the camera is narrow:
+at 01:25 the stray stood mid-patio at 1.4% area (held as too_far) but 23.1%
+frame HEIGHT. Height barely moves with orientation. MIN_HEIGHT_PCT=20.
+
+WHAT RAN ON THE NIGHT OF 08-27 -> 08-28 (read this before changing any gate).
+
+Dima's Pi deterrent was CONFIRMED STOPPED (he checked in person; it had been
+silent since 14:04 after firing in bursts all morning). So any sound that
+played that night was OURS and is attributable.
+
+Firing rule, in order -- the log line says which gate stopped it:
+
+    outside 22:00-06:00            -> hold  (all 10 labelled person events fall
+                                             outside this; so do the dawn and
+                                             dusk light artefacts)
+    < 2 orange frames of 6         -> hold  ("too_few"; every person and light
+                                             artefact ever labelled scored 0-1)
+    person anywhere in the burst   -> hold  (weak check: catches only 5 of 9)
+    area < 4% and not closing      -> "too_far"; a drill at the gate is most of
+                                             a patio from the speaker
+    closing on the door            -> FIRE early, so the sound lands as the cat
+                                             arrives in the band
+    mid-patio, area >= 4%          -> FIRE  (the sweet spot)
+    at flap in the newest 2 frames -> "at_flap"; NEVER fire -- a cat part-way
+                                             through can bolt back inside
+
+Then escalate every 2-3s while it stays, cap 6 sounds / 30s, stopping the
+instant it leaves, reaches the flap, or a person appears. Sound DRILL_boost3
+(0.85s, chosen because Dave and Dima both rated it most startling and it has
+the fastest roundtrip). 75s of video around any fire in ~/ocp-watch/reactions/.
+
+LATENCY was the thing fixed on 08-27. Both paths now judge on frames 1-2.5s
+old, not up to 10s:
+  - patrol takes the TAIL of the newest readable segment at fps=4 (0.3s for 6
+    frames). A direct RTSP grab is WORSE -- 3.6-4.0s just to collect.
+  - server.py passes fr[-n:] not fr[:n]. segments.frames() returns oldest-first
+    spread across ~10s, deliberately, so early frames catch the cat far enough
+    away to measure against the background. Right for classifying, wrong for
+    aiming.
+  - patrol samples every 5s inside the window, 30s outside.
+
+EVERY THRESHOLD HERE IS FITTED TO ONE APPROACH (02:59 on 08-27: area 0.4-3.4%
+by the gate, 6.8-13.0% mid-patio, x0 749->233 as it closed). That is a sample
+of one. If tonight's approach looks different, the band may not line up --
+check the "too_far"/"at_flap" lines in the log before assuming the gates are
+right.
+
+FIRST: THE DETERRENT FIRED. 2026-08-27 03:18:27, DRILL_boost3 played at the
+orange stray. Full account in the first-deterrent-fire memory; do not
+re-derive it. Reaction video (60s, 25s before + 35s after) at
+/home/david/ocp-watch/reactions/fire-20260827-031828.mp4 -- WATCH IT. The one
+question it answers that nothing else can is whether the cat visibly reacts.
+It was already walking toward the gate when the sound played, so this proves
+the mechanism, not the deterrence.
+
+ONE COMMAND OUTSTANDING, needs root:
+
+    sudo systemctl restart ocp-detector
+
+server.py now calls deter.consider on an orange_cat verdict and DETER_ARM=1 is
+in .env, but the running process predates the change. Until that restart the
+only armed paths are the patrol (30s polling -- it MISSED the 02:59 arrival
+entirely) and any exitwatch you start by hand. server.py fires on real motion
+with a 15-frame burst and is the right home for this.
+
+THE FLAP GUARD IS DAVE'S RULE, NOT AN OPTIMISATION. Never fire while the animal
+is part-way through the cat door -- a startled cat in a small opening may bolt
+back inside or hurt itself. FLAP_ZONE=(105,238,200,355) in deter.py, measured
+off the frame. It held fire for 34 seconds at 03:17:53 and released at 03:18:26
+when the cat was clear. Two bugs were made building it in twenty minutes (see
+the memory); if you touch it, re-run the frame tests before arming.
+
+You are on odd-fellow, the second ThinkPad, which has run the orange-cat detector
+since 12:57 on 2026-08-25. Dave's main laptop returns from Reed CUS today. Read
+/home/david/ocp-watch/REARM.md end to end first, then AGENTS.md. Project memory
+here is authoritative; the laptop's copy is stale and must never be merged back.
+
+FIRST, TWO THINGS THAT DECAY OVERNIGHT.
+
+1. The hardware watchdog is armed only for the uptime it was armed in. Check:
+
+       cat /sys/class/watchdog/watchdog0/timeleft   # 60 and PINNED = protected
+                                                    # counting down = NOT protected
+       journalctl -b | /bin/grep "Using hardware watchdog"
+
+   If the box rebooted overnight the module will be absent again. Re-arm with
+   `sudo modprobe iTCO_wdt`, and consider making it permanent:
+   `echo iTCO_wdt | sudo tee -a /etc/initramfs-tools/modules && sudo update-initramfs -u`.
+
+2. The five watches die with the Claude session, so NOTHING alerted overnight.
+   Re-arm them from the scripts listed in REARM.md and SELF-TEST each -- they
+   honour a `selftest-N` trigger file so you can prove the path without waiting
+   for a real event.
+
+THE ONE THING THAT MATTERS MOST: HA delivery has been dead since 17:18 on 08-25
+and the root cause is FOUND and PROVEN. `shell_command.cat_motion_json` curls
+`http://192.168.1.93:8080/motion` -- Dave's DHCP lease on Dima's LAN, dead from
+home. HA's own log says `return code: 7`. The automation is CORRECT and its
+Trace reads clean every time, because shell_command failures do not propagate.
+The fix and the full evidence are in /home/david/ocp-watch/ASK-DIMA.md, which
+was NOT sent on the 25th because Dima was unreachable. **Check whether it has
+been sent, and whether POSTs resumed:**
+
+    n=$(/bin/grep -c "POST /motion" frames/server.log); echo ${n:-0}
+
+Do not re-derive the diagnosis and do not re-open the `camera.snapshot` theory --
+it was wrong; the superseded draft is kept at ASK-DIMA.md.superseded-1910. If
+Dima wants detection back without editing YAML, repointing the automation at
+`shell_command.cat_motion_img_vpn` is verified to reach us.
+
+REVIEW THE NIGHT. The patrol was the only detection channel overnight, so its
+log is the sole record of anything that visited:
+
+    /bin/grep -E "PATROL|patrol error" /home/david/ocp-watch/patrol.log
+    ls -lt /home/david/ocp-watch/patrol/
+
+ALWAYS look at the frame before saying a cat was there. Low `det_conf` hits are
+often light on the grey siding -- 19:37 and 19:42 on 08-25 both scored 83-90%
+ginger on an empty patio at det_conf 0.32/0.37, because the detector path never
+consults bg_corr. Overnight hits are IR, so the rel_bright discriminator is the
+relevant one, not warm_pct.
+
+THE LAPTOP COMES BACK TODAY. The detector does NOT move back -- see the
+laptop-return-procedure memory, and do not start wg-quick@wg0 on the laptop
+while odd-fellow holds 192.168.7.4. The laptop is also the ONLY machine that can
+reach GitHub: the bundle handover carried commits but not remote config, and
+odd-fellow has no gh, no SSH key, no known_hosts for github.com. Right order is
+fetch odd-fellow over ssh, then push to GitHub from the laptop, and only then
+consider revoking the handover key. odd-fellow is 3 ahead, 0 behind; local
+backups from 08-25 20:44 are in ~/ocp-backups/.
+
+WHAT WENT RIGHT on 08-25 evening, so you do not re-derive it: the firmware
+update worked on the half that can be tested -- 283s of sustained 8-core load
+produced ZERO `acpi_os_execute_deferred hogged` events, where old firmware went
+4->35 under the same load and 4->131 in 31 seconds on the boot that froze. Note
+gpe16 itself still fires (~1.2/s under load); the EC storm remains, only the
+hogging stopped. The AC-transition trigger is still untested and needs a human
+to pull the plug -- safe to try only while the watchdog is confirmed armed.
+`evaluate.py` is 30/30. The full chain was re-proven at 20:28.
+
+Open work is in the next-steps memory: person false positives still need field
+confirmation, visit pooling is the blocker for deterrent hardware, and Dima has
+the camera speaker working, which opens the Phase 0 "would have sprayed" dry
+run. We are NOT going live for a while. Prioritise HA delivery and keeping the
+box stable over new detector work.
+
+THE OVERNIGHT DATA SHOULD BE GOOD, AND HERE IS WHY. Dima leaves the porch light
+on (confirmed by Dave 08-25). Measured at 20:51, well after dark, the OUTSIDE
+camera was still on the COLOUR path -- channel spread 14.69, brightness 94.4 --
+not IR. So the strong ginger discriminator, the one that gave 70.1% warm and
+43.6pp over surround on the stray at 18:47, should have been live all night on
+the camera that actually matters. Do not assume "night implies IR" for outside.
+
+FIRST CONFIRMATION ALREADY IN: at 21:01:39 a tuxedo RESIDENT crossed the patio
+and was correctly rejected -- verdict=no_orange, 0.062% ginger, channel spread
+13.28 (COLOUR path, porch light holding after full dark). Frame at
+/home/david/ocp-watch/patrol/patrol-210149.jpg. Note det_conf was only 0.25
+because the cat was half out of frame at the right edge: the classification was
+right but YOLO barely held it, which is the known weak spot of 30s single-frame
+sampling. Check whether the colour path held through the SMALL HOURS too.
+
+Confirm it cheaply from the log rather than trusting it: colour-path hits carry
+a real `% ginger` figure; IR frames read ~0% ginger regardless of the animal.
+If any stretch of the night reads ~0% ginger on a real detection, the light went
+off and that window was effectively blind -- `rel_bright` was calibrated on the
+INSIDE camera and there is no validated night discriminator for outside in IR.
+
+OVERNIGHT RESULT: THE STRAY VISITED TWICE, AND THE VISIT WAS ~5 MINUTES.
+
+  22:10:08  sitting distant by the gate. 50.3% ginger, det_conf 0.43.
+            Patrol labelled it LOW-CONFIDENCE "likely sunlight on the siding"
+            -- WRONG REASON at 22:10, there is no sun. The low det_conf is
+            distance, not light. That heuristic's message needs fixing.
+  05:20:51  AT THE FLAP, head in, entering. 44.9% ginger, det_conf 0.62.
+  05:25:51  back OUT on the patio, tail up, walking to the gate.
+            30.8% ginger, det_conf 0.92 (close to camera).
+
+Frames in stray-2026-08-25-2210/ and stray-2026-08-26-0520/. All verified by
+eye, not taken on the verdict alone.
+
+**This visit was AT MOST 5 minutes**, in the small hours -- the window where a
+longer dwell was thought most likely. 08-25's 18:47 visit was under 3 minutes.
+
+DO NOT conclude from this that visits are ~5 minutes. **Dave says visit length
+VARIES** (2026-08-26), and he has watched these cats far longer than our two
+data points. The documented "9-11 minutes" is not wrong so much as not the
+whole story -- it is one end of a range, and we have now sampled the other end.
+
+The design-relevant statement is therefore about VARIANCE, not a mean: a
+deterrent cannot assume the cat will still be there after N minutes, because
+sometimes it will not be. It has to act on detection, not on dwell. Equally, do
+not assume visits are always short -- a long visit is the case where repeat or
+escalating deterrence matters.
+
+WE ALREADY HAVE PARTIAL DATA -- look before re-deriving. The 30 labelled clips
+in samples/labelled/cats/ carry START and END times in their filenames, so
+clustering them reconstructs visit spans (8-16/8-17):
+
+    orange stray : 8.5 min (3 motion events, 00:39:37->00:48:06), plus
+                   two pass-bys of 8s and 19s
+    residents    : 0.1 min up to 31.7 min
+
+That confirms Dave's 2-20 min range. BUT DO NOT QUOTE THOSE NUMBERS AS A
+DISTRIBUTION. They are dominated by the arbitrary gap used to group motion
+events into a visit:
+
+    our-cats  gap=3min  -> 17 visits, longest  3.6 min
+              gap=10min -> 14 visits, longest 10.4 min
+              gap=20min -> 10 visits, longest 34.5 min
+
+Same data, 3.6 to 34.5 min depending on one free parameter. The orange cat's
+8.5 min is the one robust figure (stable for any gap >=10 min), but it is a
+single observation. Two further problems: the clips are a CURATED calibration
+set, not a complete record, so a missing export silently splits a visit; and
+outside-camera motion says when the cat was VISIBLE, not when it was inside.
+
+The complete archive is on DAVE'S LAPTOP (~3.3 GB of events ending 08-25
+12:43), not on odd-fellow -- odd-fellow's events.csv has only 23 rows because
+the detector moved here at 12:57 and delivery broke at 17:18. Mine that archive
+before generating new data.
+
+The question cannot be settled by better clustering. It needs the INSIDE camera
+to know when the cat is actually in. visit.py already does this and logged a
+real entry->exit of ~1.8 min at 18:48 on 08-25. Dave declined to run it
+continuously on 08-26 -- do not re-propose it unprompted.
+
+Caveat on this one: the 05:20 frame shows head-in-flap, which is
+direction-ambiguous on a single frame; entering is the natural reading given it
+is outside at 05:25, but a burst would settle it.
+
+THE DETECTOR SAW NONE OF IT. POST count never moved off 23 all night. Three
+confirmed stray events now missed (18:47, 22:10, 05:20) because HA delivery is
+down. This is the argument to give Dima if he needs one.
+
+BOUNDARY CASE WORTH REPLAYING: at 11:02:33 on 08-26, in bright midday sun, a
+BLACK-AND-WHITE RESIDENT scored **19.7% ginger** -- ABOVE the 16% colour
+threshold, and above BOTH candidate thresholds from the night-gated replay
+(T=15, T=16). It was correctly rejected only because the surround margin was
+5.1pp against a 16pp requirement. Frame at
+boundary-cases/2026-08-26-1102-resident-19.7pct-ginger-saved-by-margin.jpg
+
+Lesson: DO NOT tune warm_pct in isolation. The night-gated replay that produced
+T=15/16 was fitted on evening and IR-ish frames; midday sun pushes a resident
+past all of them. In that light the whole scene is warm, so the cat is not warm
+RELATIVE TO ITS SURROUND -- which is exactly what the margin check measures,
+and it is the check doing the safety work here.
+
+This is the mirror image of the dawn false positives: those had a huge margin
+(55-58pp) on an EMPTY patio; this has a real cat with a tiny margin. Neither
+feature is sufficient alone, and any threshold change must be replayed against
+BOTH failure modes, not just the one being fixed.
+
+FIELD EVIDENCE ON THE PERSON QUESTION (the open blocker). At 21:25:29 a PERSON
+walked onto the patio WEARING ORANGE/CORAL SHORTS, alongside a tuxedo resident.
+Frame saved at /home/david/ocp-watch/person-evidence/2026-08-25-2125-person-in-
+orange-shorts.jpg (patrol copy: patrol/patrol-212529.jpg).
+
+The patrol logged verdict=no_orange, det_conf=0.49, person_overlap=0.00 -- it
+picked the CAT as the animal box and scored it 0.0% ginger, which is correct.
+person_overlap=0.00 is also correct here: the person and the cat are far apart,
+so there is genuinely no overlap. Nothing misfired.
+
+But this is exactly the scenario the person-FP work is about, and it is now
+confirmed to happen in the field, at night, on this patio: people come out
+there, and they wear orange. The unanswered question is what happens when the
+BEST animal box is a person's orange clothing rather than a cat -- then
+person_overlap would be high, and the whole safety case rests on that check
+alone. Worth replaying this frame and constructing the adversarial case.
+
+DAWN FALSE POSITIVES ARE REAL AND THE WINDOW IS ~07:00, NOT 06:00. Confirmed
+2026-08-26 at 07:01:05: 88.6% ginger, 56.4pp over surround, det_conf 0.28,
+motion_frac 0.0000 -- on a COMPLETELY EMPTY patio. Frame kept at
+false-positives/2026-08-26-0701-empty-patio-88pct-ginger.jpg.
+
+Note the mechanism may NOT be the documented "raking light on the grey siding".
+In this frame the sun is up and striking the lens: top-right is blown out and
+there is a magenta/pink flare smear across the BOTTOM-RIGHT corner, away from
+the siding. Lens flare and lit siding are different failure modes and may need
+different fixes -- check where the detector box actually landed before assuming.
+
+DO NOT BUILD A FILTER FROM det_conf AND motion_frac. It is tempting and it is
+WRONG. Laid side by side, this night's six orange verdicts do not separate:
+
+  REAL   22:10  conf 0.43  motion 0.0000   <-- stray sitting still, by the gate
+  REAL   05:20  conf 0.62  motion 0.0990
+  REAL   05:25  conf 0.92  motion 0.0205
+  FALSE  19:37  conf 0.32  motion 0.0194
+  FALSE  19:42  conf 0.37  motion 0.0039
+  FALSE  07:01  conf 0.28  motion 0.0000
+
+The 22:10 REAL sighting has low confidence AND exactly zero motion -- the same
+signature as the 07:01 FALSE one. A cat sitting still is indistinguishable from
+a light artefact on these two features. Any "low conf + no motion = not a cat"
+rule would have thrown away a confirmed stray visit.
+
+What actually separated them was LOOKING AT THE FRAME. That remains the only
+reliable method until something like bg_corr reaches the detector path.
+
+Nothing between 05:44 and 07:01, so the small hours themselves were clean.

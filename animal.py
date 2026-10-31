@@ -31,6 +31,7 @@ Costs ~31 ms/frame on CPU, so a 15-frame burst is well under a second.
 """
 
 import os
+import threading
 
 import cv2
 import numpy as np
@@ -52,6 +53,13 @@ NMS_THRESHOLD = 0.45
 
 _net = None
 _unavailable = None
+
+# cv2.dnn.Net is NOT thread-safe: deter's escalate thread scoring a burst
+# while the patrol loop runs its own detect corrupts the shared net's
+# internal buffers (shape assertions in forwardGraph/concat, seen live
+# 2026-09-03 00:52 -- killed the escalation ladder at sound 2). All
+# setInput/forward pairs go through this lock.
+_net_lock = threading.Lock()
 
 
 def available():
@@ -115,8 +123,9 @@ def detect(frame, want_person=False):
     canvas, scale, ox, oy = _letterbox(frame)
     blob = cv2.dnn.blobFromImage(canvas, 1 / 255.0, (INPUT_SIZE, INPUT_SIZE),
                                  swapRB=True, crop=False)
-    net.setInput(blob)
-    out = net.forward()
+    with _net_lock:
+        net.setInput(blob)
+        out = net.forward()
 
     # YOLOv8 emits (1, 4 + numclasses, numanchors); transpose to per-anchor
     # rows so each row is [cx, cy, w, h, score per class].
@@ -182,6 +191,26 @@ def _overlap(box, other):
 PERSON_OVERLAP = 0.5
 
 
+def best_box_from(dets, frame_shape, min_area_frac=0.0008):
+    """best_box's selection applied to an existing detect() result.
+
+    One YOLO pass can serve both the person question and the animal box:
+    deter.score_burst asks both for every burst frame, and running the model
+    twice per frame doubled the cost of every deterrent decision (old D8).
+    """
+    h, w = frame_shape[:2]
+    people = [d for d in dets if d["cls"] == PERSON_CLASS]
+    for d in dets:
+        if d["cls"] == PERSON_CLASS:
+            continue
+        x0, y0, x1, y1 = d["box"]
+        if (x1 - x0) * (y1 - y0) < min_area_frac * w * h:
+            continue
+        cover = max((_overlap(d["box"], p["box"]) for p in people), default=0.0)
+        return {**d, "person_overlap": round(cover, 3)}
+    return None
+
+
 def best_box(frame, min_area_frac=0.0008, check_people=True):
     """The most confident animal, or None.
 
@@ -193,15 +222,5 @@ def best_box(frame, min_area_frac=0.0008, check_people=True):
     much of the animal box a person box covers. Callers must refuse to fire on
     anything above `PERSON_OVERLAP`.
     """
-    h, w = frame.shape[:2]
     dets = detect(frame, want_person=check_people)
-    people = [d for d in dets if d["cls"] == PERSON_CLASS]
-    for d in dets:
-        if d["cls"] == PERSON_CLASS:
-            continue
-        x0, y0, x1, y1 = d["box"]
-        if (x1 - x0) * (y1 - y0) < min_area_frac * w * h:
-            continue
-        cover = max((_overlap(d["box"], p["box"]) for p in people), default=0.0)
-        return {**d, "person_overlap": round(cover, 3)}
-    return None
+    return best_box_from(dets, frame.shape, min_area_frac)

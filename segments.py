@@ -38,6 +38,20 @@ SEGMENT_COUNT = 6
 
 RESTART_DELAY = 3.0
 
+# 2026-09-07 20:14: both recorders WEDGED. The ffmpegs were alive for 4h16m but
+# had written nothing since 18:55 -- 79 minutes blind, discovered only because a
+# health watch happened to be armed. The RTSP source was reachable throughout.
+#
+# Two independent causes, so two fixes:
+#   1. ffmpeg had no I/O timeout, so a stalled read blocks forever instead of
+#      erroring out. SOCKET_TIMEOUT_US gives it one.
+#   2. _supervise blocked on proc.wait(), which only returns when ffmpeg EXITS.
+#      A hung-but-alive process was invisible to it. STALE_LIMIT watches the
+#      output instead of the process -- the only signal that cannot lie, since
+#      what we actually need is fresh segments, not a live pid.
+SOCKET_TIMEOUT_US = int(float(os.getenv("SEG_SOCKET_TIMEOUT", "10")) * 1_000_000)
+STALE_LIMIT = float(os.getenv("SEG_STALE_LIMIT", "30"))
+
 
 def _base_dir():
     """Prefer RAM; fall back to a temp dir if /dev/shm is unavailable."""
@@ -57,6 +71,7 @@ class SegmentRecorder:
         self._stop = threading.Event()
         self.thread = None
         self.restarts = 0
+        self.stalls = 0
         self.last_error = ""
 
     # -- lifecycle --------------------------------------------------------
@@ -78,6 +93,15 @@ class SegmentRecorder:
             self.thread.join(timeout=5)
         shutil.rmtree(self.dir, ignore_errors=True)
 
+    def _newest_mtime(self):
+        """mtime of the most recent segment file, or 0 if there are none."""
+        try:
+            files = [os.path.join(self.dir, f) for f in os.listdir(self.dir)
+                     if f.endswith(".mp4")]
+            return max((os.path.getmtime(f) for f in files), default=0)
+        except OSError:
+            return 0
+
     def _kill(self):
         if self.proc and self.proc.poll() is None:
             self.proc.terminate()
@@ -90,6 +114,8 @@ class SegmentRecorder:
         return [
             "ffmpeg", "-loglevel", "error",
             "-rtsp_transport", "tcp",
+            # Without this a stalled read hangs forever (see STALE_LIMIT).
+            "-timeout", str(SOCKET_TIMEOUT_US),
             "-i", self.url,
             "-an",              # no audio; smaller files, fewer codec surprises
             "-c", "copy",       # THE point: remux, never decode
@@ -124,6 +150,19 @@ class SegmentRecorder:
                 self._stop.wait(RESTART_DELAY)
                 continue
 
+            # Watch the OUTPUT, not the process. proc.wait() alone waits
+            # forever on a wedged ffmpeg -- that is the 79-minute blind spot.
+            spawned = time.time()
+            while self.proc.poll() is None and not self._stop.is_set():
+                age = time.time() - max(self._newest_mtime(), spawned)
+                if age > STALE_LIMIT:
+                    self.last_error = (f"recorder WEDGED: no new segment for "
+                                       f"{age:.0f}s while ffmpeg was alive "
+                                       f"-- killed it")
+                    self.stalls += 1
+                    self._kill()
+                    break
+                self._stop.wait(2.0)
             self.proc.wait()
             if self._stop.is_set():
                 return
@@ -216,6 +255,7 @@ class SegmentRecorder:
                           and self.proc and self.proc.poll() is None),
             "segments": len(segs),
             "restarts": self.restarts,
+            "stalls": self.stalls,
             "seconds_since_segment": None if newest is None
             else round(time.time() - newest, 2),
             "error": self.last_error,

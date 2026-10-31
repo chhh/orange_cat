@@ -28,7 +28,6 @@ import asyncio
 import collections
 import csv
 import os
-import random
 import threading
 import time
 from datetime import datetime
@@ -44,14 +43,9 @@ import detect
 import segments
 import streamer
 from capture import CAMERAS, grab, grab_burst, measure, stream_url
-from talk import play
-import config
 
 EVENT_DIR = "frames/events"
 CSV_PATH = "frames/events.csv"
-
-# In-memory tail of motion receipts: what arrived and how it was processed.
-RECENT_EVENTS = collections.deque(maxlen=20)
 
 load_dotenv()
 app = FastAPI()
@@ -60,10 +54,9 @@ app = FastAPI()
 FIELDS = ["ts", "camera", "file", "verdict", "class", "confidence", "brightness",
           "saturation", "rgb_spread", "is_ir", "warm_pct", "luma_std",
           "px", "motion_px", "motion_frac", "iso_frac", "usable",
-          "roi_px", "cx", "cy", "bbox_w", "bbox_h", "bbox_bottom",
-          "bg_corr", "warm_margin", "det_conf", "box_frac",
-          "rel_bright", "cv", "frames", "votes", "width",
-          "height", "source", "reasoning"]
+          "roi_px", "bg_corr", "warm_margin", "det_conf", "box_frac",
+          "rel_bright", "cv",
+          "frames", "votes", "width", "height", "source", "reasoning"]
 
 
 def record(row):
@@ -128,95 +121,7 @@ BURST = 15
 #             decompresses video nobody looks at.
 #   off       0% idle CPU,  96MB, ~4.0s per event, no pre-trigger frames
 #             dial out on each event and pay the 3.1s RTSP handshake.
-BUFFER_MODE = config.BUFFER_MODE
-
-# --- Sound playback config (cat-deterrent.toml) ---------------------------
-# Comma-separated list; one is picked at random per trigger. Each must exist
-# in HA's config/www/sounds/.
-ORANGE_SOUNDS = config.ORANGE_SOUNDS
-
-# Position gate: only fire once the animal's bbox bottom is at least this
-# fraction of frame height (1.0 = touching the bottom edge, at the door).
-# 0 disables the gate entirely.
-NEAR_DOOR_MIN_BOTTOM = config.NEAR_DOOR_MIN_BOTTOM
-
-# Bypass: fire the sound on ANY motion event with frames, whatever the
-# verdict -- for testing with your own feet.
-SOUND_ON_ANY_MOTION = config.SOUND_ON_ANY_MOTION
-
-# While the target stays in view, keep firing a random sound every
-# random.uniform(min, max) seconds instead of once per motion event.
-SOUND_MIN_INTERVAL = config.SOUND_MIN_INTERVAL
-SOUND_MAX_INTERVAL = config.SOUND_MAX_INTERVAL
-SOUND_MAX_DURATION = config.SOUND_MAX_DURATION
-
-_deterring = {}  # camera -> threading.Event; set when its deterrent loop stops
-
-
-def _play_sound(sound):
-    t = time.time()
-    try:
-        play(sound)
-        print(f"  play_media roundtrip {1000 * (time.time() - t):.0f} ms "
-              f"({sound})", flush=True)
-    except Exception as exc:
-        print(f"  sound playback failed ({sound}): {exc}", flush=True)
-
-
-def _fresh_frame(camera):
-    url = stream_url(camera)
-    if BUFFER_MODE == "segments":
-        return segments.get(camera, url).latest_frame()
-    if BUFFER_MODE == "decoded":
-        snap = streamer.get(camera, url).snapshot(1)
-        return snap[0] if snap else None
-    return grab(url)
-
-
-def _deter_loop(camera, stop):
-    """Repeatedly play a random sound while the target remains in view.
-
-    Bounded by SOUND_MAX_DURATION: a stale background model makes an empty
-    scene read as permanently busy, which would otherwise spam forever (seen
-    on 2026-08-25 night test: 15% of the ROI 'moving' with nobody there).
-    """
-    started = time.time()
-    try:
-        while not stop.wait(random.uniform(SOUND_MIN_INTERVAL,
-                                           SOUND_MAX_INTERVAL)):
-            if time.time() - started > SOUND_MAX_DURATION:
-                print(f"  deterrent: max duration reached, stopping ({camera})",
-                      flush=True)
-                break
-            try:
-                frame = _fresh_frame(camera)
-                if frame is None:
-                    print(f"  deterrent: no frame, stopping loop ({camera})",
-                          flush=True)
-                    break
-                verdict, _, _, info, _ = score_frame(frame, camera)
-            except Exception as exc:
-                print(f"  deterrent loop error ({camera}): {exc}", flush=True)
-                break
-
-            if SOUND_ON_ANY_MOTION:
-                present = info.get("motion_frac", 0.0) >= detect.MIN_MOTION_FRACTION
-            else:
-                present = verdict == "orange_cat"
-
-            print(f"  deterrent: motion_frac={info.get('motion_frac', 0)} "
-                  f"verdict={verdict} present={present}", flush=True)
-
-            if not present:
-                print(f"  target left view, stopping deterrent ({camera})",
-                      flush=True)
-                break
-
-            sound = random.choice(ORANGE_SOUNDS)
-            print(f"  deterrent: playing {sound} ({camera})", flush=True)
-            _play_sound(sound)
-    finally:
-        stop.set()  # mark finished so the next event starts a fresh loop
+BUFFER_MODE = os.getenv("BUFFER_MODE", "segments").lower()
 
 # Seconds to wait after a trigger before reading the segment buffer.
 #
@@ -279,54 +184,11 @@ async def _await_trigger_segment(camera):
 
 @app.get("/health")
 def health():
-    return {"ok": True, "host": config.HOST,
+    return {"ok": True, "host": os.getenv("CAT_HOST", "192.168.1.1"),
             "cameras": list(CAMERAS), "buffer_mode": BUFFER_MODE,
             "buffers": (segments.all_status() if BUFFER_MODE == "segments"
                         else streamer.all_status()),
             "warnings": list(_warnings)}
-
-
-@app.get("/events")
-def recent_events():
-    """Last few motion receipts and their processing status."""
-    return {
-        "recent": list(RECENT_EVENTS),
-        "last_orange_cat": _last_orange_cat(),
-    }
-
-
-def _last_orange_cat():
-    if not os.path.exists(CSV_PATH):
-        return None
-    try:
-        with open(CSV_PATH, newline="") as fh:
-            last = None
-            for row in csv.DictReader(fh):
-                if row.get("verdict") == "orange_cat":
-                    last = row["ts"]
-            return last
-    except OSError:
-        return None
-
-
-@app.get("/config")
-def show_config():
-    """The resolved config the server is running with (no secrets)."""
-    return {
-        "host": config.HOST,
-        "buffer_mode": BUFFER_MODE,
-        "bg_refresh_seconds": BG_REFRESH_SECONDS,
-        "ha": {"host": config.HA_HOST, "speaker": config.HA_SPEAKER,
-               "ssh_host": config.HA_SSH_HOST},
-        "sound": {
-            "sounds": ORANGE_SOUNDS,
-            "near_door_min_bottom": NEAR_DOOR_MIN_BOTTOM,
-            "on_any_motion": SOUND_ON_ANY_MOTION,
-            "min_interval": SOUND_MIN_INTERVAL,
-            "max_interval": SOUND_MAX_INTERVAL,
-            "max_duration": SOUND_MAX_DURATION,
-        },
-    }
 
 
 @app.on_event("startup")
@@ -347,7 +209,7 @@ def _warm_buffers():
 # Without the ring buffer nothing else feeds the background model, and a stale
 # model scores every event against yesterday's light. One frame per camera
 # every few minutes is enough and costs almost nothing.
-BG_REFRESH_SECONDS = config.BG_REFRESH_SECONDS
+BG_REFRESH_SECONDS = int(os.getenv("BG_REFRESH_SECONDS", "300"))
 _stop_refresh = threading.Event()
 
 
@@ -440,10 +302,26 @@ def _start_refresh():
 @app.on_event("shutdown")
 def _close_buffers():
     _stop_refresh.set()
-    for ev in _deterring.values():
-        ev.set()
     streamer.stop_all()
     segments.stop_all()
+
+
+def _fresh_burst(n):
+    """n fresh frames from the newest readable outside segment, newest last.
+
+    Shared with the patrol so both escalation loops judge the same picture.
+    Imported lazily: patrol.py sets up sys.path/cwd at import and the server
+    must not pay that at startup or fail to start if the patrol file is
+    missing -- in that case escalation falls back to stopping after one sound
+    (no frames -> "stopping").
+    """
+    try:
+        import patrol
+        return patrol.burst_frames(n)
+    except Exception as exc:
+        print(f"  fresh burst unavailable ({exc}) -- escalation will stop",
+              flush=True)
+        return []
 
 
 # Find the animal first, then ask what colour it is. The motion path is kept
@@ -467,8 +345,22 @@ def score_frame(frame, camera):
             ir_feat = detect.ir_features(frame, mask, camera)
 
     if USE_DETECTOR and animal.available():
-        found = animal.best_box(frame)
+        # One detect() call answers both questions. Asking via best_box alone
+        # was the person-suppression gap (D6): a person ALONE in frame made
+        # best_box return None, the frame was recorded "no_animal", and the
+        # burst-level person rule below never saw the sighting -- so one weak
+        # animal box elsewhere in the burst could still win orange_cat
+        # (event 20260818-215515-948, labelled person, scored orange_cat 1.0).
+        dets = animal.detect(frame, want_person=True)
+        people = [d for d in dets if d["cls"] == animal.PERSON_CLASS]
+        found = animal.best_box_from(dets, frame.shape)
         if found is None:
+            if people:
+                # "person" is not in detect.DECISIVE, so it abstains from the
+                # vote -- but it now REACHES the burst rule, which is the fix.
+                return ("person",
+                        "person alone in frame -- refusing to classify",
+                        stats, {**info, "det_conf": people[0]["conf"]}, ir_feat)
             # Abstain rather than vote. On a real raid the detector fired on
             # as few as 1 of 15 frames, so treating "no detection" as
             # evidence of absence would drown every true positive in its own
@@ -617,11 +509,8 @@ def _notify_class(verdict, confidence, tally):
 @app.post("/motion")
 async def motion(request: Request, image: UploadFile | None = None,
                  camera: str = Form("outside")):
-    t0 = time.time()
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")[:-3]
     os.makedirs(EVENT_DIR, exist_ok=True)
-    entry = {"ts": stamp, "camera": camera, "status": "received"}
-    RECENT_EVENTS.append(entry)
 
     # Give the segment covering the trigger time to finish writing. No-op
     # unless POST_TRIGGER_WAIT is set; see the comment on that constant.
@@ -733,7 +622,6 @@ async def motion(request: Request, image: UploadFile | None = None,
     if not frames:
         print(f"{stamp}  {camera}: event but no usable frame ({source})",
               flush=True)
-        entry.update(camera=camera, status="no_frame")
         return {"ok": False, "error": "no frame", "camera": camera,
                 "source": source}
 
@@ -753,6 +641,41 @@ async def motion(request: Request, image: UploadFile | None = None,
         print(f"{stamp}  {camera}: person seen in this burst -- "
               f"suppressing the orange_cat verdict", flush=True)
         verdict, confidence = "person", 0.0
+
+    # Deterrent. Wired here rather than to the patrol because the patrol polls
+    # blind every 30s and missed the confirmed stray at 02:59 on 2026-08-27
+    # entirely, while this path caught it 13/15 on the motion trigger.
+    # deter.consider re-scores the burst with its own gates: >= 2 orange frames
+    # (the false-positive population sits at exactly 1), and a DIRECT person
+    # check, because best_box() hides a lone person by returning None.
+    if verdict == "orange_cat" and camera == "outside":
+        try:
+            import deter
+            decision = deter.consider_and_escalate(
+                # The NEWEST frames, not the oldest. segments.frames() spreads
+                # its burst across ~10s oldest-first -- deliberately, so early
+                # frames catch the cat far enough away to measure against the
+                # background. Good for classifying, wrong for aiming: fr[:n]
+                # would have the deterrent judging where the cat was ten
+                # seconds ago, and would make deter's "at the flap RIGHT NOW"
+                # check look at the oldest detections instead of the newest.
+                lambda n, fr=frames: fr[-n:],
+                log=lambda m: print(m, flush=True),
+                # The repeat loop must look at the patio NOW, not at the
+                # burst above: that closure returns the same frames every
+                # call, so escalation could never see the cat leave or reach
+                # the flap -- on 2026-08-29 02:56 it played five sounds at a
+                # cat in the flap zone. patrol.burst_frames re-decodes the
+                # tail of the newest segment on each call.
+                escalate_grab=_fresh_burst)
+            if decision == "fired":
+                # 35s of copying -- never block the request handler.
+                threading.Thread(target=deter.capture_reaction,
+                                 args=(f"fire-{stamp}",),
+                                 kwargs={"log": lambda m: print(m, flush=True)},
+                                 daemon=True).start()
+        except Exception as exc:
+            print(f"  deterrent error: {exc}", flush=True)
 
     if verdict is None:
         # Nothing decisive -- report the most common abstention instead.
@@ -783,9 +706,6 @@ async def motion(request: Request, image: UploadFile | None = None,
            **(ir_feat or {})}
     _self_check(camera, info, info.get("roi_px") or 0)
     record(row)
-    entry.update(camera=camera, status="processed", verdict=verdict,
-                 confidence=round(confidence, 3),
-                 motion_frac=info.get("motion_frac"))
 
     mode = "IR " if stats["is_ir"] else "COL"
     print(f"{stamp}  {camera:7s} {mode}  {verdict:18s} "
@@ -794,35 +714,11 @@ async def motion(request: Request, image: UploadFile | None = None,
           f"votes={row['votes']}  src={source}", flush=True)
 
     kind, headline = _notify_class(verdict, confidence, tally)
-
-    if SOUND_ON_ANY_MOTION:
-        fire, why = True, "bypass (any motion)"
-    else:
-        near_door = any(s[3].get("bbox_bottom", 0.0) >= NEAR_DOOR_MIN_BOTTOM
-                        for s in scored)
-        fire = verdict == "orange_cat" and near_door
-        why = "orange_cat near door" if fire else ""
-
-    sound = random.choice(ORANGE_SOUNDS) if fire else None
-    sound_lat_ms = (time.time() - t0) * 1000
-    if sound:
-        print(f"{stamp}  -> playing {sound} ({why})  "
-              f"[req->fire {sound_lat_ms:.0f} ms]", flush=True)
-        threading.Thread(target=_play_sound, args=(sound,),
-                         daemon=True, name="orange-sound").start()
-        running = _deterring.get(camera)
-        if running is None or running.is_set():
-            stop = threading.Event()
-            _deterring[camera] = stop
-            threading.Thread(target=_deter_loop, args=(camera, stop),
-                             daemon=True, name=f"deter-{camera}").start()
-
     return {"ok": True, "camera": camera, "verdict": verdict,
             "class": kind, "headline": headline,
             "confidence": round(confidence, 3), "frames": len(frames),
             "votes": tally, "source": source, "stats": stats,
-            "motion": info, "ir": ir_feat, "reasoning": reasoning,
-            "sound": sound, "sound_latency_ms": round(sound_lat_ms, 1)}
+            "motion": info, "ir": ir_feat, "reasoning": reasoning}
 
 
 if __name__ == "__main__":
